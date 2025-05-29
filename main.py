@@ -3,7 +3,10 @@ import traceback
 
 from pkgs.actioners.s1.actioner import ActionerS1, ActionerS1Config
 from pkgs.clients.exchange import ExchangeClient, ExchangeClientConfig
-from pkgs.managers.advancerisk.manager import ManagerAdvancedRisk, ManagerAdvancedRiskConfig
+from pkgs.managers.advancerisk.manager import (
+    ManagerAdvancedRisk,
+    ManagerAdvancedRiskConfig,
+)
 from pkgs.managers.order.manager import ManagerOrder
 from pkgs.managers.position.manager import ManagerPosition, ManagerPositionConfig
 from pkgs.traders.grid.trader import TraderGrid, TraderGridConfig
@@ -12,6 +15,7 @@ from pkgs.utils.logging import get_logger_named, set_default_level
 from pkgs.utils.webserver import start_web_server
 
 ################################################################################
+
 
 async def main():
     set_default_level(True)
@@ -24,7 +28,9 @@ async def main():
         exchange_cfg = ExchangeClientConfig()
         exchange = ExchangeClient(exchange_cfg)
     except Exception as e:
-        error_msg = f"Exchange client initialization failed: {str(e)}\n{traceback.format_exc()}"
+        error_msg = (
+            f"Exchange client initialization failed: {str(e)}\n{traceback.format_exc()}"
+        )
         logger.error(error_msg)
         return
 
@@ -36,30 +42,44 @@ async def main():
         risk_manager = ManagerAdvancedRisk(risk_manager_cfg, position_manager)
 
         actioner_s1_cfg = ActionerS1Config()
-        actioner_s1 = ActionerS1(actioner_s1_cfg, exchange, position_manager, risk_manager)
+        actioner_s1 = ActionerS1(
+            actioner_s1_cfg, exchange, position_manager, risk_manager
+        )
 
         order_manager = ManagerOrder()
 
         trader_cfg = TraderGridConfig()
-        trader = TraderGrid(trader_cfg, exchange, position_manager, risk_manager, actioner_s1, order_manager)
+        trader = TraderGrid(
+            trader_cfg,
+            exchange,
+            position_manager,
+            risk_manager,
+            actioner_s1,
+            order_manager,
+        )
         await trader.initialize()
-        
-        web_server_task = asyncio.create_task(start_web_server(trader, exchange, position_manager, actioner_s1, order_manager))
+
+        web_server_task = asyncio.create_task(
+            start_web_server(
+                trader, exchange, position_manager, actioner_s1, order_manager
+            )
+        )
         trading_task = asyncio.create_task(trader.main_loop())
-        
+
         await asyncio.gather(web_server_task, trading_task)
-        
+
     except Exception as e:
         error_msg = f"启动失败: {str(e)}\n{traceback.format_exc()}"
         logger.error(error_msg)
-        
+
     finally:
-        if 'trader' in locals():
+        if "trader" in locals():
             try:
                 await trader.exchange.close()
                 logger.info("交易所连接已关闭")
             except Exception as e:
                 logger.error(f"关闭连接时发生错误: {str(e)}")
 
+
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())

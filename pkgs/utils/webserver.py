@@ -14,30 +14,31 @@ from pkgs.traders.grid.trader import TraderGrid
 
 ################################################################################
 
+
 class IPLogger:
     def __init__(self):
         self.ip_records = []  # Store IP access records
         self.max_records = 100  # Store a maximum of 100 records
-        self._log_cache = {'content': None, 'timestamp': 0}  # Add log cache
+        self._log_cache = {"content": None, "timestamp": 0}  # Add log cache
         self._cache_ttl = 2  # Cache TTL (seconds)
 
     def add_record(self, ip, path):
         # Check if a record with the same IP exists
         for record in self.ip_records:
-            if record['ip'] == ip:
+            if record["ip"] == ip:
                 # If found, only update the time
-                record['time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                record['path'] = path  # Update access path
+                record["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                record["path"] = path  # Update access path
                 return
-        
+
         # If it's a new IP, add a new record
         record = {
-            'ip': ip,
-            'path': path,
-            'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            "ip": ip,
+            "path": path,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         self.ip_records.append(record)
-        
+
         # If the maximum number of records is exceeded, delete the oldest record
         if len(self.ip_records) > self.max_records:
             self.ip_records.pop(0)
@@ -45,7 +46,9 @@ class IPLogger:
     def get_records(self):
         return self.ip_records
 
+
 ################################################################################
+
 
 def get_system_stats():
     """Get system resource usage"""
@@ -54,40 +57,42 @@ def get_system_stats():
     memory_used = memory.used / (1024 * 1024 * 1024)  # Convert to GB
     memory_total = memory.total / (1024 * 1024 * 1024)
     return {
-        'cpu_percent': cpu_percent,
-        'memory_used': round(memory_used, 2),
-        'memory_total': round(memory_total, 2),
-        'memory_percent': memory.percent
+        "cpu_percent": cpu_percent,
+        "memory_used": round(memory_used, 2),
+        "memory_total": round(memory_total, 2),
+        "memory_percent": memory.percent,
     }
+
 
 async def _read_log_content():
     """Common log reading function"""
-    log_path = os.path.join(os.path.dirname(__file__), 'trading_system.log')
+    log_path = os.path.join(os.path.dirname(__file__), "trading_system.log")
     if not os.path.exists(log_path):
         return None
-        
-    async with aiofiles.open(log_path, mode='r', encoding='utf-8') as f:
+
+    async with aiofiles.open(log_path, mode="r", encoding="utf-8") as f:
         content = await f.read()
-        
+
     # Split logs by line and reverse order
-    lines = content.strip().split('\n')
+    lines = content.strip().split("\n")
     lines.reverse()
-    return '\n'.join(lines)
+    return "\n".join(lines)
+
 
 async def handle_log(request):
     try:
         # Record IP access
         ip = request.remote
-        request.app['ip_logger'].add_record(ip, request.path)
-        
+        request.app["ip_logger"].add_record(ip, request.path)
+
         # Get system resource status
         system_stats = get_system_stats()
-        
+
         # Read log content
         content = await _read_log_content()
         if content is None:
             return web.Response(text="Log file does not exist", status=404)
-            
+
         html = f"""
         <!DOCTYPE html>
         <html>
@@ -382,42 +387,45 @@ async def handle_log(request):
         </body>
         </html>
         """
-        return web.Response(text=html, content_type='text/html')
+        return web.Response(text=html, content_type="text/html")
     except Exception as e:
         return web.Response(text=f"Error: {str(e)}", status=500)
+
 
 async def handle_status(request):
     """Handle status API requests"""
     try:
-        trader: TraderGrid = request.app['trader']
-        exchange: ExchangeClient = request.app['exchange']
-        position_manager: ManagerPosition = request.app['position_manager']
-        s1_controller: ActionerS1 = request.app['actioner_s1']
+        trader: TraderGrid = request.app["trader"]
+        exchange: ExchangeClient = request.app["exchange"]
+        position_manager: ManagerPosition = request.app["position_manager"]
+        s1_controller: ActionerS1 = request.app["actioner_s1"]
 
         # Get exchange data
         balance = await exchange.fetch_balance()
-        current_price = await position_manager.get_latest_price() or 0 # Provide default value in case of failure
-        
+        current_price = (
+            await position_manager.get_latest_price() or 0
+        )  # Provide default value in case of failure
+
         # Get funding account balance
         funding_balance = await exchange.fetch_funding_balance()
-        
+
         # Get grid parameters
         grid_size = trader.grid_size
         grid_size_decimal = grid_size / 100 if grid_size else 0
         threshold = grid_size_decimal / 5
-        
+
         # ---> NEW: Calculate grid upper/lower bands <---
         # Ensure trader.base_price and trader.grid_size are valid
         upper_band = None
         lower_band = None
         if trader.base_price is not None and trader.grid_size is not None:
-             try:
-                 # Call existing methods in trader.py
-                 upper_band = trader._get_upper_band()
-                 lower_band = trader._get_lower_band()
-             except Exception as band_e:
-                 logging.warning(f"Failed to calculate grid upper/lower bands: {band_e}")
-        
+            try:
+                # Call existing methods in trader.py
+                upper_band = trader._get_upper_band()
+                lower_band = trader._get_lower_band()
+            except Exception as band_e:
+                logging.warning(f"Failed to calculate grid upper/lower bands: {band_e}")
+
         # Calculate system uptime
         current_time = time.time()
         uptime_seconds = int(current_time - trader.start_time)
@@ -425,12 +433,12 @@ async def handle_status(request):
         hours, remainder = divmod(remainder, 3600)
         minutes, seconds = divmod(remainder, 60)
         uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
-        
+
         # Calculate total assets
-        bnb_balance = float(balance['total'].get('BNB', 0))
-        usdt_balance = float(balance['total'].get('USDT', 0))
+        bnb_balance = float(balance["total"].get("BNB", 0))
+        usdt_balance = float(balance["total"].get("USDT", 0))
         total_assets = usdt_balance + (bnb_balance * current_price)
-        
+
         # Calculate total P&L and P&L rate
         initial_principal = 0
         total_profit = 0.0
@@ -439,36 +447,49 @@ async def handle_status(request):
             total_profit = total_assets - initial_principal
             profit_rate = (total_profit / initial_principal) * 100
         else:
-            logging.warning("Initial principal not set or is 0, cannot calculate P&L rate")
-        
+            logging.warning(
+                "Initial principal not set or is 0, cannot calculate P&L rate"
+            )
+
         # Get recent trade info
         last_trade_price = trader.last_trade_price
         last_trade_time = trader.last_trade_time
-        last_trade_time_str = datetime.fromtimestamp(last_trade_time).strftime('%Y-%m-%d %H:%M:%S') if last_trade_time else '--'
-        
+        last_trade_time_str = (
+            datetime.fromtimestamp(last_trade_time).strftime("%Y-%m-%d %H:%M:%S")
+            if last_trade_time
+            else "--"
+        )
+
         # Get trade history
         trade_history = []
-        order_manager: ManagerOrder = request.app['order_manager']
+        order_manager: ManagerOrder = request.app["order_manager"]
         trades = order_manager.get_trade_history()
-        trade_history = [{
-            'timestamp': datetime.fromtimestamp(trade['timestamp']).strftime('%Y-%m-%d %H:%M:%S'),
-            'side': trade.get('side', '--'),
-            'price': trade.get('price', 0),
-            'amount': trade.get('amount', 0),
-            'profit': trade.get('profit', 0)
-        } for trade in trades[-10:]]  # Take only the last 10 trades
-        
+        trade_history = [
+            {
+                "timestamp": datetime.fromtimestamp(trade["timestamp"]).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                "side": trade.get("side", "--"),
+                "price": trade.get("price", 0),
+                "amount": trade.get("amount", 0),
+                "profit": trade.get("profit", 0),
+            }
+            for trade in trades[-10:]
+        ]  # Take only the last 10 trades
+
         # Calculate target order amount (10% of total assets)
-        target_order_amount = await trader._calculate_order_amount('buy') # buy/sell result is the same
-        
+        target_order_amount = await trader._calculate_order_amount(
+            "buy"
+        )  # buy/sell result is the same
+
         # Get position percentage - use risk manager's method to get the most accurate position ratio
         position_ratio = await position_manager.get_position_ratio()
         position_percentage = position_ratio * 100
-        
+
         # Get S1 high/low prices
         s1_high = s1_controller.s1_daily_high if s1_controller else None
         s1_low = s1_controller.s1_daily_low if s1_controller else None
-        
+
         # Build response data
         status = {
             "base_price": trader.base_price,
@@ -491,17 +512,25 @@ async def handle_status(request):
             # ---> NEW: Add upper/lower bands to response data <---
             "grid_upper_band": upper_band,
             "grid_lower_band": lower_band,
-            "uptime": uptime_str, # Add uptime string
-            "uptime_seconds": uptime_seconds # Add uptime seconds for calculation
+            "uptime": uptime_str,  # Add uptime string
+            "uptime_seconds": uptime_seconds,  # Add uptime seconds for calculation
         }
-        
+
         return web.json_response(status)
     except Exception as e:
         logging.error(f"Failed to get status data: {str(e)}", exc_info=True)
         return web.json_response({"error": str(e)}, status=500)
 
-async def start_web_server(trader: TraderGrid, exchange: ExchangeClient, position_manager: ManagerPosition, actioner_s1: ActionerS1, order_manager: ManagerOrder):
+
+async def start_web_server(
+    trader: TraderGrid,
+    exchange: ExchangeClient,
+    position_manager: ManagerPosition,
+    actioner_s1: ActionerS1,
+    order_manager: ManagerOrder,
+):
     app = web.Application()
+
     # Add middleware to handle invalid requests
     @web.middleware
     async def error_middleware(request, handler):
@@ -511,34 +540,34 @@ async def start_web_server(trader: TraderGrid, exchange: ExchangeClient, positio
             return web.json_response(
                 {"error": str(ex)},
                 status=ex.status,
-                headers={'Access-Control-Allow-Origin': '*'}
+                headers={"Access-Control-Allow-Origin": "*"},
             )
         except Exception as e:
             return web.json_response(
                 {"error": "Internal Server Error"},
                 status=500,
-                headers={'Access-Control-Allow-Origin': '*'}
+                headers={"Access-Control-Allow-Origin": "*"},
             )
-    
-    app.middlewares.append(error_middleware)
-    app['trader'] = trader
-    app['exchange'] = exchange
-    app['position_manager'] = position_manager
-    app['actioner_s1'] = actioner_s1
-    app['order_manager'] = order_manager
-    app['ip_logger'] = IPLogger()
-    
-    # Disable access log
-    logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
 
-    home_prefix = os.getenv('HOME_PREFIX', '')
-    
-    app.router.add_get('/' + home_prefix, handle_log)
-    app.router.add_get('/api/logs', handle_log_content)
-    app.router.add_get('/api/status', handle_status)
+    app.middlewares.append(error_middleware)
+    app["trader"] = trader
+    app["exchange"] = exchange
+    app["position_manager"] = position_manager
+    app["actioner_s1"] = actioner_s1
+    app["order_manager"] = order_manager
+    app["ip_logger"] = IPLogger()
+
+    # Disable access log
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+
+    home_prefix = os.getenv("HOME_PREFIX", "")
+
+    app.router.add_get("/" + home_prefix, handle_log)
+    app.router.add_get("/api/logs", handle_log_content)
+    app.router.add_get("/api/status", handle_status)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 58181)
+    site = web.TCPSite(runner, "0.0.0.0", 58181)
     await site.start()
 
     # Print access addresses
@@ -547,13 +576,14 @@ async def start_web_server(trader: TraderGrid, exchange: ExchangeClient, positio
     logging.info(f"- Local access: http://{local_ip}:58181/{home_prefix}")
     logging.info(f"- LAN access: http://0.0.0.0:58181/{home_prefix}")
 
+
 async def handle_log_content(request):
     """API endpoint that returns only log content"""
     try:
         content = await _read_log_content()
         if content is None:
             return web.Response(text="", status=404)
-            
+
         return web.Response(text=content)
     except Exception as e:
         return web.Response(text="", status=500)
