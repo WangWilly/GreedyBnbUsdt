@@ -1,16 +1,13 @@
 import asyncio
-from datetime import datetime
-import json
 import time
 import numpy as np
-from typing import Dict, Any, Optional, List, Union
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
-from pkgs.actioners.s1.actioner import ActionerS1, ActionerS1Config
-from pkgs.managers.advancerisk.manager import ManagerAdvancedRisk, ManagerAdvancedRiskConfig
-from pkgs.managers.position.manager import ManagerPosition, ManagerPositionConfig # Added import
+from pkgs.actioners.s1.actioner import ActionerS1
+from pkgs.managers.advancerisk.manager import ManagerAdvancedRisk
+from pkgs.managers.position.manager import ManagerPosition
 from pkgs.utils.logging import get_logger_named
 from pkgs.clients.exchange import ExchangeClient
 from pkgs.managers.order.manager import ManagerOrder
@@ -121,11 +118,10 @@ class TraderGridConfig(BaseSettings):
 ################################################################################
 
 class TraderGrid:
-    def __init__(self, config: TraderGridConfig, exchange: ExchangeClient):
+    def __init__(self, config: TraderGridConfig, exchange: ExchangeClient, position_manager: ManagerPosition, risk_manager: ManagerAdvancedRisk, actioner_s1: ActionerS1, order_manager: ManagerOrder):
         self.logger = get_logger_named("TraderGrid")
         self.exchange = exchange
-        self.cfg = config
-        self.symbol = config.SYMBOL # Keep self.symbol for direct access if needed by TraderGrid logic
+        self.cfg: TraderGridConfig = config
 
         ############################################################################
 
@@ -154,17 +150,11 @@ class TraderGrid:
         self.last_trade_price = None
         self.last_grid_adjust_time = time.time()
         
-        # Create position manager first
-        position_cfg = ManagerPositionConfig()
-        self.position_manager = ManagerPosition(position_cfg, exchange)
-
         # runtime helpers
-        self.order_manager = ManagerOrder()
-        risk_manager_cfg = ManagerAdvancedRiskConfig()
-        self.risk_manager = ManagerAdvancedRisk(risk_manager_cfg, self.position_manager)
-        
-        actioner_s1_cfg = ActionerS1Config()
-        self.actioner_s1 = ActionerS1(actioner_s1_cfg, self.exchange, self.position_manager, self.risk_manager)
+        self.position_manager = position_manager
+        self.risk_manager = risk_manager
+        self.actioner_s1 = actioner_s1
+        self.order_manager = order_manager
         
     ############################################################################
     # initialization and setup
@@ -309,100 +299,104 @@ class TraderGrid:
             )
         except Exception as e:
             self.logger.error(f"初始资金检查失败: {str(e)}")
-
-    ############################################################################
-
-    def _get_upper_band(self):
-        return self.base_price * (1 + self.grid_size / 100)
-    
-    def _get_lower_band(self):
-        return self.base_price * (1 - self.grid_size / 100)
-    
-    async def _check_buy_signal(self):
-        current_price = self.current_price
-        if current_price <= self._get_lower_band():
-            self.buying_or_selling = True    # 进入买入或卖出监测
-            # 记录最低价
-            new_lowest = current_price if self.lowest is None else min(self.lowest, current_price)
-            # 只在最低价更新时打印日志
-            if new_lowest != self.lowest:
-                self.lowest = new_lowest
-                self.logger.info(
-                    f"买入监测 | "
-                    f"当前价: {current_price:.2f} | "
-                    f"触发价: {self._get_lower_band():.5f} | "
-                    f"最低价: {self.lowest:.2f} | "
-                    f"网格下限: {self._get_lower_band():.2f} | "
-                    f"反弹阈值: {TraderGridConfig.flip_threshold(self.grid_size)*100:.2f}%"
-                )
-            threshold = TraderGridConfig.flip_threshold(self.grid_size)
-            # 从最低价反弹指定比例时触发买入
-            if self.lowest and current_price >= self.lowest * (1 + threshold):
-                self.buying_or_selling = False # 不在买入或卖出
-                self.logger.info(f"触发买入信号 | 当前价: {current_price:.2f} | 已反弹: {(current_price/self.lowest-1)*100:.2f}%")
-                # 检查买入余额是否充足
-                if not await self.check_buy_balance(current_price): # current_price passed for consistency
-                    return False
-                return True
-        else:
-            self.buying_or_selling = False    # 退出买入或卖出监测
-        return False
-    
-    async def _check_sell_signal(self):
-        current_price = self.current_price
-        initial_upper_band = self._get_upper_band()  # 初始上轨价格
         
-        position_ratio = await self.position_manager.get_position_ratio()
-        # 使用配置中的开关控制基准价自动修正功能
-        if self.cfg.AUTO_ADJUST_BASE_PRICE and current_price >= initial_upper_band and position_ratio < self.cfg.MIN_POSITION_RATIO:
-            # 仓位低于最小仓位，直接修正基准价为当前价格
-            old_base_price = self.base_price
-            self.base_price = current_price
-            self.highest = None  # 重置最高价记录
+    ############################################################################
+    
+    async def _calculate_dynamic_interval_seconds(self):
+        """根据波动率动态计算网格调整的时间间隔（秒）"""
+        try:
+            volatility = await self._calculate_volatility()
+            if volatility is None: # Handle case where volatility calculation failed
+                 raise ValueError("波动率计算失败") # Volatility calculation failed
+
+            interval_rules = self.cfg.DYNAMIC_INTERVAL_PARAMS['volatility_to_interval_hours']
+            default_interval_hours = self.cfg.DYNAMIC_INTERVAL_PARAMS['default_interval_hours']
+
+            matched_interval_hours = default_interval_hours # Start with default
+
+            for rule in interval_rules:
+                vol_range = rule['range']
+                # Check if volatility falls within the defined range [min, max)
+                if vol_range[0] <= volatility < vol_range[1]:
+                    matched_interval_hours = rule['interval_hours']
+                    self.logger.debug(f"动态间隔匹配: 波动率 {volatility:.4f} 在范围 {vol_range}, 间隔 {matched_interval_hours} 小时") # Dynamic interval match
+                    break # Stop after first match
+
+            interval_seconds = matched_interval_hours * 3600
+            # Add a minimum interval safety check
+            min_interval_seconds = 5 * 60 # Example: minimum 5 minutes
+            final_interval_seconds = max(interval_seconds, min_interval_seconds)
+
+            self.logger.debug(f"计算出的动态调整间隔: {final_interval_seconds:.0f} 秒 ({final_interval_seconds/3600:.2f} 小时)") # Calculated dynamic adjustment interval
+            return final_interval_seconds
+
+        except Exception as e:
+            self.logger.error(f"计算动态调整间隔失败: {e}, 使用默认间隔。") # Failed to calculate dynamic interval, using default.
+            # Fallback to default interval from config
+            default_interval_hours = self.cfg.DYNAMIC_INTERVAL_PARAMS.get('default_interval_hours', 1.0)
+            return default_interval_hours * 3600
+
+    async def adjust_grid_size(self):
+        """根据波动率和市场趋势调整网格大小"""
+        try:
+            volatility = await self._calculate_volatility()
+            self.logger.info(f"当前波动率: {volatility:.4f}")
             
-            # 记录修正日志
-            self.logger.info(
-                f"基准价修正 | "
-                f"原因: 仓位过低 ({position_ratio:.2%} < {self.cfg.MIN_POSITION_RATIO:.2%}) | "
-                f"旧基准价: {old_base_price:.2f} | "
-                f"新基准价: {current_price:.2f}"
+            # 根据波动率获取基础网格大小
+            base_grid = None
+            for range_config in self.cfg.GRID_PARAMS['volatility_threshold']['ranges']:
+                if range_config['range'][0] <= volatility < range_config['range'][1]:
+                    base_grid = range_config['grid']
+                    break
+            
+            # 如果没有匹配到波动率范围，使用默认网格
+            if base_grid is None:
+                base_grid = self.cfg.INITIAL_GRID
+
+            # 删除趋势调整逻辑
+            new_grid = base_grid
+
+            # 确保网格在允许范围内
+            new_grid = max(min(new_grid, self.cfg.GRID_PARAMS['max']), self.cfg.GRID_PARAMS['min'])
+            
+            if new_grid != self.grid_size:
+                self.logger.info(
+                    f"调整网格大小 | "
+                    f"波动率: {volatility:.2%} | "
+                    f"原网格: {self.grid_size:.2f}% | "
+                    f"新网格: {new_grid:.2f}%"
+                )
+                self.grid_size = new_grid
+            
+        except Exception as e:
+            self.logger.error(f"调整网格大小失败: {str(e)}")
+
+    async def _calculate_volatility(self):
+        """计算价格波动率"""
+        try:
+            # 获取24小时K线数据
+            klines = await self.exchange.fetch_ohlcv(
+                self.cfg.SYMBOL, 
+                timeframe='1h',
+                limit=self.cfg.VOLATILITY_WINDOW
             )
             
-            return False  # 不触发卖出信号
-        
-        if current_price >= initial_upper_band:
-            self.buying_or_selling = True    # 进入买入或卖出监测
-            # 记录最高价
-            new_highest = current_price if self.highest is None else max(self.highest, current_price)
-            threshold = TraderGridConfig.flip_threshold(self.grid_size)
-            
-            # 计算动态触发价格 (基于最高价的回调阈值)
-            dynamic_trigger_price = new_highest * (1 - threshold) if new_highest is not None else initial_upper_band
-            
-            # 只在最高价更新时打印日志
-            if new_highest != self.highest:
-                self.highest = new_highest
-                # 重新计算动态触发价，基于更新后的最高价
-                dynamic_trigger_price = self.highest * (1 - threshold)
+            if not klines:
+                return 0
                 
-                self.logger.info(
-                    f"卖出监测 | "
-                    f"当前价: {current_price:.2f} | "
-                    f"触发价(动态): {dynamic_trigger_price:.5f} | "
-                    f"最高价: {self.highest:.2f}"
-                )
-                
-            # 从最高价下跌指定比例时触发卖出
-            if self.highest and current_price <= self.highest * (1 - threshold):
-                self.buying_or_selling = False # 不在买入或卖出
-                self.logger.info(f"触发卖出信号 | 当前价: {current_price:.2f} | 目标价: {self.highest * (1 - threshold):.5f} | 已下跌: {(1-current_price/self.highest)*100:.2f}%")
-                # 检查卖出余额是否充足
-                if not await self.check_sell_balance():
-                    return False
-                return True
-        else:
-            self.buying_or_selling = False    # 退出买入或卖出监测
-        return False
+            # 计算收益率
+            prices = [float(k[4]) for k in klines]  # 收盘价
+            returns = np.diff(np.log(prices))
+            
+            # 计算波动率（标准差）并年化
+            volatility = np.std(returns) * np.sqrt(24 * 365)  # 年化波动率
+            return volatility
+            
+        except Exception as e:
+            self.logger.error(f"计算波动率失败: {str(e)}")
+            return 0
+
+    ############################################################################
     
     async def _calculate_order_amount(self):
         """计算目标订单金额 (总资产的10%)\n"""
@@ -440,128 +434,8 @@ class TraderGrid:
             self.logger.error(f"计算目标订单金额失败: {str(e)}")
             # 返回一个合理的默认值或上次缓存值，避免返回0导致后续计算错误
             return getattr(self, cache_key, 0) # 如果缓存存在则返回缓存，否则返回0
-    
-    async def _calculate_dynamic_interval_seconds(self):
-        """根据波动率动态计算网格调整的时间间隔（秒）"""
-        try:
-            volatility = await self._calculate_volatility()
-            if volatility is None: # Handle case where volatility calculation failed
-                 raise ValueError("波动率计算失败") # Volatility calculation failed
 
-            interval_rules = self.cfg.DYNAMIC_INTERVAL_PARAMS['volatility_to_interval_hours']
-            default_interval_hours = self.cfg.DYNAMIC_INTERVAL_PARAMS['default_interval_hours']
-
-            matched_interval_hours = default_interval_hours # Start with default
-
-            for rule in interval_rules:
-                vol_range = rule['range']
-                # Check if volatility falls within the defined range [min, max)
-                if vol_range[0] <= volatility < vol_range[1]:
-                    matched_interval_hours = rule['interval_hours']
-                    self.logger.debug(f"动态间隔匹配: 波动率 {volatility:.4f} 在范围 {vol_range}, 间隔 {matched_interval_hours} 小时") # Dynamic interval match
-                    break # Stop after first match
-
-            interval_seconds = matched_interval_hours * 3600
-            # Add a minimum interval safety check
-            min_interval_seconds = 5 * 60 # Example: minimum 5 minutes
-            final_interval_seconds = max(interval_seconds, min_interval_seconds)
-
-            self.logger.debug(f"计算出的动态调整间隔: {final_interval_seconds:.0f} 秒 ({final_interval_seconds/3600:.2f} 小时)") # Calculated dynamic adjustment interval
-            return final_interval_seconds
-
-        except Exception as e:
-            self.logger.error(f"计算动态调整间隔失败: {e}, 使用默认间隔。") # Failed to calculate dynamic interval, using default.
-            # Fallback to default interval from config
-            default_interval_hours = self.cfg.DYNAMIC_INTERVAL_PARAMS.get('default_interval_hours', 1.0)
-            return default_interval_hours * 3600
-    
-    async def main_loop(self):
-        while True:
-            try:
-                if not self.initialized:
-                    await self.initialize()
-                    await self.actioner_s1.update_daily_s1_levels()
-
-                # 保留S1水平更新
-                await self.actioner_s1.update_daily_s1_levels()
-
-                # 获取当前价格
-                current_price = await self.position_manager.get_latest_price()
-                if not current_price:
-                    await asyncio.sleep(5)
-                    continue
-                self.current_price = current_price
-
-                # 优先检查买入卖出信号，不执行风控检查
-                # 添加重试机制确保买入卖出检测正常运行
-                sell_signal = await self._check_signal_with_retry(self._check_sell_signal, "卖出检测")
-                if sell_signal:
-                    await self.execute_order('sell')
-                else:
-                    buy_signal = await self._check_signal_with_retry(self._check_buy_signal, "买入检测")
-                    if buy_signal:
-                        await self.execute_order('buy')
-                    else:
-                        # 只有在没有交易信号时才执行其他操作
-                        
-                        # 执行风控检查
-                        if await self.risk_manager.multi_layer_check():
-                            await asyncio.sleep(5)
-                            continue
-
-                        # 执行S1策略
-                        await self.actioner_s1.check_and_execute()
-                        
-                        # 如果时间到了并且不在买入或卖出调整网格大小
-                        dynamic_interval_seconds = await self._calculate_dynamic_interval_seconds()
-                        if time.time() - self.last_grid_adjust_time > dynamic_interval_seconds and not self.buying_or_selling:
-                            self.logger.info(f"时间到了，准备调整网格大小 (间隔: {dynamic_interval_seconds/3600} 小时).")
-                            await self.adjust_grid_size()
-                            self.last_grid_adjust_time = time.time()
-
-                await asyncio.sleep(5)
-
-            except Exception as e:
-                self.logger.error(f"Main loop error: {e}", exc_info=True)
-                await asyncio.sleep(30)
-                
-    async def _check_signal_with_retry(self, check_func, check_name, max_retries=3, retry_delay=2):
-        """带重试机制的信号检测函数
-        
-        Args:
-            check_func: 要执行的检测函数 (_check_buy_signal 或 _check_sell_signal)
-            check_name: 检测名称，用于日志
-            max_retries: 最大重试次数
-            retry_delay: 重试间隔（秒）
-            
-        Returns:
-            bool: 检测结果
-        """
-        retries = 0
-        while retries <= max_retries:
-            try:
-                return await check_func()
-            except Exception as e:
-                retries += 1
-                if retries <= max_retries:
-                    self.logger.warning(f"{check_name}出错，{retry_delay}秒后进行第{retries}次重试: {str(e)}")
-                    await asyncio.sleep(retry_delay)
-                else:
-                    self.logger.error(f"{check_name}失败，达到最大重试次数({max_retries}次): {str(e)}")
-                    return False
-        return False
-
-    async def emergency_stop(self):
-        try:
-            open_orders = await self.exchange.fetch_open_orders(self.cfg.SYMBOL)
-            for order in open_orders:
-                await self.exchange.cancel_order(order['id'], self.cfg.SYMBOL) # Added symbol to cancel_order
-            self.logger.critical("所有交易已停止，进入复盘程序")
-        except Exception as e:
-            self.logger.error(f"紧急停止失败: {str(e)}")
-        finally:
-            await self.exchange.close()
-            exit()
+    ############################################################################
 
     async def execute_order(self, side):
         """执行订单，带重试机制"""
@@ -644,9 +518,6 @@ class TraderGrid:
                     # 更新最后交易时间和价格
                     self.last_trade_time = time.time()
                     self.last_trade_price = float(updated_order['price'])
-                    
-                    # 更新总资产信息
-                    # await self._update_total_assets() # No longer needed, total_assets fetched from position_manager when required
                     
                     self.logger.info(f"基准价已更新: {self.base_price}")
                     
@@ -759,65 +630,8 @@ class TraderGrid:
         
         return False
 
-    async def adjust_grid_size(self):
-        """根据波动率和市场趋势调整网格大小"""
-        try:
-            volatility = await self._calculate_volatility()
-            self.logger.info(f"当前波动率: {volatility:.4f}")
-            
-            # 根据波动率获取基础网格大小
-            base_grid = None
-            for range_config in self.cfg.GRID_PARAMS['volatility_threshold']['ranges']:
-                if range_config['range'][0] <= volatility < range_config['range'][1]:
-                    base_grid = range_config['grid']
-                    break
-            
-            # 如果没有匹配到波动率范围，使用默认网格
-            if base_grid is None:
-                base_grid = self.cfg.INITIAL_GRID
-
-            # 删除趋势调整逻辑
-            new_grid = base_grid
-
-            # 确保网格在允许范围内
-            new_grid = max(min(new_grid, self.cfg.GRID_PARAMS['max']), self.cfg.GRID_PARAMS['min'])
-            
-            if new_grid != self.grid_size:
-                self.logger.info(
-                    f"调整网格大小 | "
-                    f"波动率: {volatility:.2%} | "
-                    f"原网格: {self.grid_size:.2f}% | "
-                    f"新网格: {new_grid:.2f}%"
-                )
-                self.grid_size = new_grid
-            
-        except Exception as e:
-            self.logger.error(f"调整网格大小失败: {str(e)}")
-
-    async def _calculate_volatility(self):
-        """计算价格波动率"""
-        try:
-            # 获取24小时K线数据
-            klines = await self.exchange.fetch_ohlcv(
-                self.cfg.SYMBOL, 
-                timeframe='1h',
-                limit=self.cfg.VOLATILITY_WINDOW
-            )
-            
-            if not klines:
-                return 0
-                
-            # 计算收益率
-            prices = [float(k[4]) for k in klines]  # 收盘价
-            returns = np.diff(np.log(prices))
-            
-            # 计算波动率（标准差）并年化
-            volatility = np.std(returns) * np.sqrt(24 * 365)  # 年化波动率
-            return volatility
-            
-        except Exception as e:
-            self.logger.error(f"计算波动率失败: {str(e)}")
-            return 0
+    ############################################################################
+    # balance checking
 
     async def check_buy_balance(self):
         """检查买入前的余额，如果不够则从理财赎回"""
@@ -853,3 +667,190 @@ class TraderGrid:
         except Exception as e:
             self.logger.error(f"检查卖出余额失败: {str(e)}")
             return False
+
+    ############################################################################
+    # signal checking
+
+    # for grid trading logic
+    def _get_upper_band(self):
+        return self.base_price * (1 + self.grid_size / 100)
+    
+    # for grid trading logic
+    def _get_lower_band(self):
+        return self.base_price * (1 - self.grid_size / 100)
+
+    async def _check_buy_signal(self):
+        current_price = self.current_price
+        if current_price <= self._get_lower_band():
+            self.buying_or_selling = True    # 进入买入或卖出监测
+            # 记录最低价
+            new_lowest = current_price if self.lowest is None else min(self.lowest, current_price)
+            # 只在最低价更新时打印日志
+            if new_lowest != self.lowest:
+                self.lowest = new_lowest
+                self.logger.info(
+                    f"买入监测 | "
+                    f"当前价: {current_price:.2f} | "
+                    f"触发价: {self._get_lower_band():.5f} | "
+                    f"最低价: {self.lowest:.2f} | "
+                    f"网格下限: {self._get_lower_band():.2f} | "
+                    f"反弹阈值: {TraderGridConfig.flip_threshold(self.grid_size)*100:.2f}%"
+                )
+            threshold = TraderGridConfig.flip_threshold(self.grid_size)
+            # 从最低价反弹指定比例时触发买入
+            if self.lowest and current_price >= self.lowest * (1 + threshold):
+                self.buying_or_selling = False # 不在买入或卖出
+                self.logger.info(f"触发买入信号 | 当前价: {current_price:.2f} | 已反弹: {(current_price/self.lowest-1)*100:.2f}%")
+                # 检查买入余额是否充足
+                if not await self.check_buy_balance():
+                    return False
+                return True
+        else:
+            self.buying_or_selling = False    # 退出买入或卖出监测
+        return False
+    
+    async def _check_sell_signal(self):
+        current_price = self.current_price
+        initial_upper_band = self._get_upper_band()  # 初始上轨价格
+        
+        position_ratio = await self.position_manager.get_position_ratio()
+        # 使用配置中的开关控制基准价自动修正功能
+        if self.cfg.AUTO_ADJUST_BASE_PRICE and current_price >= initial_upper_band and position_ratio < self.cfg.MIN_POSITION_RATIO:
+            # 仓位低于最小仓位，直接修正基准价为当前价格
+            old_base_price = self.base_price
+            self.base_price = current_price
+            self.highest = None  # 重置最高价记录
+            
+            # 记录修正日志
+            self.logger.info(
+                f"基准价修正 | "
+                f"原因: 仓位过低 ({position_ratio:.2%} < {self.cfg.MIN_POSITION_RATIO:.2%}) | "
+                f"旧基准价: {old_base_price:.2f} | "
+                f"新基准价: {current_price:.2f}"
+            )
+            
+            return False  # 不触发卖出信号
+        
+        if current_price >= initial_upper_band:
+            self.buying_or_selling = True    # 进入买入或卖出监测
+            # 记录最高价
+            new_highest = current_price if self.highest is None else max(self.highest, current_price)
+            threshold = TraderGridConfig.flip_threshold(self.grid_size)
+            
+            # 计算动态触发价格 (基于最高价的回调阈值)
+            dynamic_trigger_price = new_highest * (1 - threshold) if new_highest is not None else initial_upper_band
+            
+            # 只在最高价更新时打印日志
+            if new_highest != self.highest:
+                self.highest = new_highest
+                # 重新计算动态触发价，基于更新后的最高价
+                dynamic_trigger_price = self.highest * (1 - threshold)
+                
+                self.logger.info(
+                    f"卖出监测 | "
+                    f"当前价: {current_price:.2f} | "
+                    f"触发价(动态): {dynamic_trigger_price:.5f} | "
+                    f"最高价: {self.highest:.2f}"
+                )
+                
+            # 从最高价下跌指定比例时触发卖出
+            if self.highest and current_price <= self.highest * (1 - threshold):
+                self.buying_or_selling = False # 不在买入或卖出
+                self.logger.info(f"触发卖出信号 | 当前价: {current_price:.2f} | 目标价: {self.highest * (1 - threshold):.5f} | 已下跌: {(1-current_price/self.highest)*100:.2f}%")
+                # 检查卖出余额是否充足
+                if not await self.check_sell_balance():
+                    return False
+                return True
+        else:
+            self.buying_or_selling = False    # 退出买入或卖出监测
+        return False
+
+    ############################################################################
+
+    async def _check_signal_with_retry(self, check_func, check_name, max_retries=3, retry_delay=2):
+        """带重试机制的信号检测函数
+        
+        Args:
+            check_func: 要执行的检测函数 (_check_buy_signal 或 _check_sell_signal)
+            check_name: 检测名称，用于日志
+            max_retries: 最大重试次数
+            retry_delay: 重试间隔（秒）
+            
+        Returns:
+            bool: 检测结果
+        """
+        retries = 0
+        while retries <= max_retries:
+            try:
+                return await check_func()
+            except Exception as e:
+                retries += 1
+                if retries <= max_retries:
+                    self.logger.warning(f"{check_name}出错，{retry_delay}秒后进行第{retries}次重试: {str(e)}")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    self.logger.error(f"{check_name}失败，达到最大重试次数({max_retries}次): {str(e)}")
+                    return False
+        return False
+
+    async def main_loop(self):
+        while True:
+            try:
+                if not self.initialized:
+                    await self.initialize()
+                    await self.actioner_s1.update_daily_s1_levels()
+
+                # 保留S1水平更新
+                await self.actioner_s1.update_daily_s1_levels()
+
+                # 获取当前价格
+                current_price = await self.position_manager.get_latest_price()
+                if not current_price:
+                    await asyncio.sleep(5)
+                    continue
+                self.current_price = current_price
+
+                # 优先检查买入卖出信号，不执行风控检查
+                # 添加重试机制确保买入卖出检测正常运行
+                sell_signal = await self._check_signal_with_retry(self._check_sell_signal, "卖出检测")
+                if sell_signal:
+                    await self.execute_order('sell')
+                else:
+                    buy_signal = await self._check_signal_with_retry(self._check_buy_signal, "买入检测")
+                    if buy_signal:
+                        await self.execute_order('buy')
+                    else:
+                        # 只有在没有交易信号时才执行其他操作
+                        
+                        # 执行风控检查
+                        if await self.risk_manager.multi_layer_check():
+                            await asyncio.sleep(5)
+                            continue
+
+                        # 执行S1策略
+                        await self.actioner_s1.check_and_execute()
+                        
+                        # 如果时间到了并且不在买入或卖出调整网格大小
+                        dynamic_interval_seconds = await self._calculate_dynamic_interval_seconds()
+                        if time.time() - self.last_grid_adjust_time > dynamic_interval_seconds and not self.buying_or_selling:
+                            self.logger.info(f"时间到了，准备调整网格大小 (间隔: {dynamic_interval_seconds/3600} 小时).")
+                            await self.adjust_grid_size()
+                            self.last_grid_adjust_time = time.time()
+
+                await asyncio.sleep(5)
+
+            except Exception as e:
+                self.logger.error(f"Main loop error: {e}", exc_info=True)
+                await asyncio.sleep(30)
+
+    async def emergency_stop(self):
+        try:
+            open_orders = await self.exchange.fetch_open_orders(self.cfg.SYMBOL)
+            for order in open_orders:
+                await self.exchange.cancel_order(order['id'], self.cfg.SYMBOL) # Added symbol to cancel_order
+            self.logger.critical("所有交易已停止，进入复盘程序")
+        except Exception as e:
+            self.logger.error(f"紧急停止失败: {str(e)}")
+        finally:
+            await self.exchange.close()
+            exit()

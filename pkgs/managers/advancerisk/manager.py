@@ -1,8 +1,6 @@
-from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
-from pkgs.clients.exchange import ExchangeClient
 from pkgs.managers.position.manager import ManagerPosition
 from pkgs.utils.logging import get_logger_named
 
@@ -21,12 +19,6 @@ class ManagerAdvancedRiskConfig(BaseSettings):
         alias=PREFIX + "MAX_POSITION_RATIO",
         description="最大仓位比例，超过此比例将触发风控",
     )
-    
-    RISK_FACTOR: float = Field(
-        default=0.1,
-        alias=PREFIX + "RISK_FACTOR",
-        description="风险系数，用于调整交易策略的风险承受能力",
-    )
 
 ################################################################################
 
@@ -42,7 +34,7 @@ class ManagerAdvancedRisk:
             position_ratio = await self.position_manager.get_position_ratio()
             
             # 只在仓位比例变化超过0.1%时打印日志
-            if abs(position_ratio - self.last_position_ratio) > 0.001:
+            if self.last_position_ratio == 0 or abs(position_ratio - self.last_position_ratio) > 0.001:
                 self.logger.info(
                     f"风控检查 | "
                     f"当前仓位比例: {position_ratio:.2%} | "

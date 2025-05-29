@@ -6,6 +6,12 @@ from datetime import datetime
 import psutil
 import time
 
+from pkgs.actioners.s1.actioner import ActionerS1
+from pkgs.clients.exchange import ExchangeClient
+from pkgs.managers.order.manager import ManagerOrder
+from pkgs.managers.position.manager import ManagerPosition
+from pkgs.traders.grid.trader import TraderGrid
+
 ################################################################################
 
 class IPLogger:
@@ -383,15 +389,17 @@ async def handle_log(request):
 async def handle_status(request):
     """Handle status API requests"""
     try:
-        trader = request.app['trader']
-        s1_controller = trader.position_controller_s1 # Get S1 controller instance
+        trader: TraderGrid = request.app['trader']
+        exchange: ExchangeClient = request.app['exchange']
+        position_manager: ManagerPosition = request.app['position_manager']
+        s1_controller: ActionerS1 = request.app['actioner_s1']
 
         # Get exchange data
-        balance = await trader.exchange.fetch_balance()
-        current_price = await trader._get_latest_price() or 0 # Provide default value in case of failure
+        balance = await exchange.fetch_balance()
+        current_price = await position_manager.get_latest_price() or 0 # Provide default value in case of failure
         
         # Get funding account balance
-        funding_balance = await trader.exchange.fetch_funding_balance()
+        funding_balance = await exchange.fetch_funding_balance()
         
         # Get grid parameters
         grid_size = trader.grid_size
@@ -424,7 +432,7 @@ async def handle_status(request):
         total_assets = usdt_balance + (bnb_balance * current_price)
         
         # Calculate total P&L and P&L rate
-        initial_principal = trader.config.INITIAL_PRINCIPAL
+        initial_principal = 0
         total_profit = 0.0
         profit_rate = 0.0
         if initial_principal > 0:
@@ -440,21 +448,21 @@ async def handle_status(request):
         
         # Get trade history
         trade_history = []
-        if hasattr(trader, 'order_tracker'):
-            trades = trader.order_tracker.get_trade_history()
-            trade_history = [{
-                'timestamp': datetime.fromtimestamp(trade['timestamp']).strftime('%Y-%m-%d %H:%M:%S'),
-                'side': trade.get('side', '--'),
-                'price': trade.get('price', 0),
-                'amount': trade.get('amount', 0),
-                'profit': trade.get('profit', 0)
-            } for trade in trades[-10:]]  # Take only the last 10 trades
+        order_manager: ManagerOrder = request.app['order_manager']
+        trades = order_manager.get_trade_history()
+        trade_history = [{
+            'timestamp': datetime.fromtimestamp(trade['timestamp']).strftime('%Y-%m-%d %H:%M:%S'),
+            'side': trade.get('side', '--'),
+            'price': trade.get('price', 0),
+            'amount': trade.get('amount', 0),
+            'profit': trade.get('profit', 0)
+        } for trade in trades[-10:]]  # Take only the last 10 trades
         
         # Calculate target order amount (10% of total assets)
         target_order_amount = await trader._calculate_order_amount('buy') # buy/sell result is the same
         
         # Get position percentage - use risk manager's method to get the most accurate position ratio
-        position_ratio = await trader.risk_manager._get_position_ratio()
+        position_ratio = await position_manager.get_position_ratio()
         position_percentage = position_ratio * 100
         
         # Get S1 high/low prices
@@ -492,7 +500,7 @@ async def handle_status(request):
         logging.error(f"Failed to get status data: {str(e)}", exc_info=True)
         return web.json_response({"error": str(e)}, status=500)
 
-async def start_web_server(trader):
+async def start_web_server(trader: TraderGrid, exchange: ExchangeClient, position_manager: ManagerPosition, actioner_s1: ActionerS1, order_manager: ManagerOrder):
     app = web.Application()
     # Add middleware to handle invalid requests
     @web.middleware
@@ -514,6 +522,10 @@ async def start_web_server(trader):
     
     app.middlewares.append(error_middleware)
     app['trader'] = trader
+    app['exchange'] = exchange
+    app['position_manager'] = position_manager
+    app['actioner_s1'] = actioner_s1
+    app['order_manager'] = order_manager
     app['ip_logger'] = IPLogger()
     
     # Disable access log

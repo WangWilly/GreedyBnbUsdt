@@ -118,7 +118,7 @@ class ManagerPosition:
         """Get available balance for a specific currency"""
         try:
             balance = await self.exchange.fetch_balance({'type': 'spot'})
-            return float(balance.get('free', {}).get(currency, 0)) * self.cfg.SAFETY_MARGIN
+            return float(balance.get('free', {}).get(currency, 0))
         except Exception as e:
             self.logger.error(f"Failed to get available balance for {currency}: {str(e)}")
             return 0
