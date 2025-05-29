@@ -132,88 +132,88 @@ class ExchangeClient:
 
 
     
-    # async def create_order(self, symbol, type, side, amount, price):
-    #     try:
-    #         # 在下单前重新同步时间
-    #         await self.sync_time()
-    #         # 添加时间戳到请求参数
-    #         params = {
-    #             'timestamp': int(time.time() * 1000 + self.time_diff),
-    #             'recvWindow': 5000
-    #         }
-    #         return await self.exchange.create_order(symbol, type, side, amount, price, params)
-    #     except Exception as e:
-    #         self.logger.error(f"下单失败: {str(e)}")
-    #         raise
+    async def create_order(self, symbol, type, side, amount, price):
+        try:
+            # 在下单前重新同步时间
+            await self.sync_time()
+            # 添加时间戳到请求参数
+            params = {
+                'timestamp': int(time.time() * 1000 + self.time_diff),
+                'recvWindow': 5000
+            }
+            return await self.exchange.create_order(symbol, type, side, amount, price, params)
+        except Exception as e:
+            self.logger.error(f"下单失败: {str(e)}")
+            raise
 
-    # async def create_market_order(
-    #     self,
-    #     symbol: str,
-    #     side: str,          # 只能是 'buy' 或 'sell'
-    #     amount: float,
-    #     params: dict | None = None
-    # ):
-    #     """
-    #     业务层需要的『市价单快捷封装』。
-    #     实际还是调 ccxt 的 create_order，只是把 type 固定为 'market'。
-    #     """
-    #     # 确保有 params 字典
-    #     params = params or {}
+    async def create_market_order(
+        self,
+        symbol: str,
+        side: str,          # 只能是 'buy' 或 'sell'
+        amount: float,
+        params: dict | None = None
+    ):
+        """
+        业务层需要的『市价单快捷封装』。
+        实际还是调 ccxt 的 create_order，只是把 type 固定为 'market'。
+        """
+        # 确保有 params 字典
+        params = params or {}
 
-    #     # 下单前同步时间，避免 -1021 错误
-    #     await self.sync_time()
-    #     params.update({
-    #         'timestamp': int(time.time() * 1000 + self.time_diff),
-    #         'recvWindow': 5000
-    #     })
+        # 下单前同步时间，避免 -1021 错误
+        await self.sync_time()
+        params.update({
+            'timestamp': int(time.time() * 1000 + self.time_diff),
+            'recvWindow': 5000
+        })
 
-    #     order = await self.exchange.create_order(
-    #         symbol=symbol,
-    #         type='market',
-    #         side=side.lower(),   # ccxt 规范小写
-    #         amount=amount,
-    #         price=None,          # 市价单 price 必须是 None
-    #         params=params
-    #     )
-    #     return order
+        order = await self.exchange.create_order(
+            symbol=symbol,
+            type='market',
+            side=side.lower(),   # ccxt 规范小写
+            amount=amount,
+            price=None,          # 市价单 price 必须是 None
+            params=params
+        )
+        return order
 
 
-    # async def fetch_order(self, order_id, symbol, params=None):
-    #     if params is None:
-    #         params = {}
-    #     params['timestamp'] = int(time.time() * 1000 + self.time_diff)
-    #     params['recvWindow'] = 5000
-    #     return await self.exchange.fetch_order(order_id, symbol, params)
+    async def fetch_order(self, order_id, symbol, params=None):
+        if params is None:
+            params = {}
+        params['timestamp'] = int(time.time() * 1000 + self.time_diff)
+        params['recvWindow'] = 5000
+        return await self.exchange.fetch_order(order_id, symbol, params)
     
-    # async def fetch_open_orders(self, symbol):
-    #     """获取当前未成交订单"""
-    #     return await self.exchange.fetch_open_orders(symbol)
+    async def fetch_open_orders(self, symbol):
+        """获取当前未成交订单"""
+        return await self.exchange.fetch_open_orders(symbol)
     
-    # async def cancel_order(self, order_id, symbol, params=None):
-    #     """取消指定订单"""
-    #     if params is None:
-    #         params = {}
-    #     params['timestamp'] = int(time.time() * 1000 + self.time_diff)
-    #     params['recvWindow'] = 5000
-    #     return await self.exchange.cancel_order(order_id, symbol, params)
+    async def cancel_order(self, order_id, symbol, params=None):
+        """取消指定订单"""
+        if params is None:
+            params = {}
+        params['timestamp'] = int(time.time() * 1000 + self.time_diff)
+        params['recvWindow'] = 5000
+        return await self.exchange.cancel_order(order_id, symbol, params)
     
-    # async def close(self):
-    #     """关闭交易所连接"""
-    #     try:
-    #         if self.exchange:
-    #             await self.exchange.close()
-    #             self.logger.info("交易所连接已安全关闭")
-    #     except Exception as e:
-    #         self.logger.error(f"关闭连接时发生错误: {str(e)}")
+    async def close(self):
+        """关闭交易所连接"""
+        try:
+            if self.exchange:
+                await self.exchange.close()
+                self.logger.info("交易所连接已安全关闭")
+        except Exception as e:
+            self.logger.error(f"关闭连接时发生错误: {str(e)}")
 
-    # async def fetch_order_book(self, symbol, limit=5):
-    #     """获取订单簿数据"""
-    #     try:
-    #         market = self.exchange.market(symbol)
-    #         return await self.exchange.fetch_order_book(market['id'], limit=limit)
-    #     except Exception as e:
-    #         self.logger.error(f"获取订单簿失败: {str(e)}")
-    #         raise
+    async def fetch_order_book(self, symbol, limit=5):
+        """获取订单簿数据"""
+        try:
+            market = self.exchange.market(symbol)
+            return await self.exchange.fetch_order_book(market['id'], limit=limit)
+        except Exception as e:
+            self.logger.error(f"获取订单簿失败: {str(e)}")
+            raise
 
 
 
