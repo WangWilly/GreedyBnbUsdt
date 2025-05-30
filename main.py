@@ -10,7 +10,7 @@ from pkgs.managers.advancerisk.manager import (
 from pkgs.managers.order.manager import ManagerOrder
 from pkgs.managers.position.manager import ManagerPosition, ManagerPositionConfig
 from pkgs.traders.grid.trader import TraderGrid, TraderGridConfig
-from pkgs.utils.logging import get_logger_named, set_default_level
+from pkgs.utils.logging import get_logger_named
 
 from pkgs.utils.webserver import start_web_server
 
@@ -18,7 +18,6 @@ from pkgs.utils.webserver import start_web_server
 
 
 async def main():
-    set_default_level(True)
     logger = get_logger_named("main")
     logger.info("Service is starting...")
 

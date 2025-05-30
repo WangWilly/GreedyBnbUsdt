@@ -1,26 +1,28 @@
 import time
 from datetime import datetime
-import logging
 import os
 import json
 
 import shutil
 import csv
 
+from pkgs.utils.logging import LogConfig, get_logger_named
+
 ################################################################################
 
 
 class ManagerOrder:
     def __init__(self):
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self.data_dir = os.path.join(os.path.dirname(__file__), "data")
-        if not os.path.exists(self.data_dir):
-            os.makedirs(self.data_dir)
-        self.history_file = os.path.join(self.data_dir, "trade_history.json")
-        self.backup_file = os.path.join(self.data_dir, "trade_history.backup.json")
-        self.archive_dir = os.path.join(self.data_dir, "archives")
-        if not os.path.exists(self.archive_dir):
-            os.makedirs(self.archive_dir)
+        self.logger = get_logger_named("ManagerOrder")
+
+        log_cfg = LogConfig()
+        data_dir = os.path.join(os.path.dirname(log_cfg.FILE_PATH), "data")
+        os.makedirs(data_dir, exist_ok=True)
+        self.history_file = os.path.join(data_dir, "trade_history.json")
+        self.backup_file = os.path.join(data_dir, "trade_history.backup.json")
+        self.archive_dir = os.path.join(data_dir, "archives")
+        os.makedirs(self.archive_dir, exist_ok=True)
+
         self.max_archive_months = 12
         self.order_states = {}
         self.trade_count = 0

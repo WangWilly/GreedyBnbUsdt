@@ -1,5 +1,6 @@
+**/__pycache__/
+logs/
+
 .env
 
 playground/
-
-**/__pycache__/

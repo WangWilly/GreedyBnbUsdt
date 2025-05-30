@@ -11,6 +11,7 @@ from pkgs.clients.exchange import ExchangeClient
 from pkgs.managers.order.manager import ManagerOrder
 from pkgs.managers.position.manager import ManagerPosition
 from pkgs.traders.grid.trader import TraderGrid
+from pkgs.utils.logging import LogConfig
 
 ################################################################################
 
@@ -63,10 +64,11 @@ def get_system_stats():
         "memory_percent": memory.percent,
     }
 
+cfg = LogConfig()
 
 async def _read_log_content():
     """Common log reading function"""
-    log_path = os.path.join(os.path.dirname(__file__), "trading_system.log")
+    log_path = cfg.FILE_PATH
     if not os.path.exists(log_path):
         return None
 
@@ -141,7 +143,7 @@ async def handle_log(request):
                         <div class="space-y-2">
                             <div class="flex justify-between">
                                 <span>Trading Pair</span>
-                                <span class="status-value">{request.app['trader'].symbol}</span>
+                                <span class="status-value">{request.app['trader'].cfg.SYMBOL}</span>
                             </div>
                             <div class="flex justify-between">
                                 <span>Base Price</span>
@@ -297,6 +299,27 @@ async def handle_log(request):
             </div>
 
             <script>
+                // Helper functions for UI updates
+                function updateElement(id, value, suffix = '', decimals = 2) {{
+                    const element = document.querySelector(id);
+                    if (!element) return;
+                    
+                    element.textContent = value != null ? 
+                        `${{Number(value).toFixed(decimals)}}${{suffix}}` : '--';
+                }}
+                
+                function updateStyledElement(id, value, decimals = 2, suffix = '', 
+                                            positiveClass = 'profit', negativeClass = 'loss') {{
+                    const element = document.querySelector(id);
+                    if (!element) return;
+                    
+                    element.textContent = value != null ? 
+                        `${{Number(value).toFixed(decimals)}}${{suffix}}` : '--';
+                    if (value != null) {{
+                        element.className = `status-value ${{value >= 0 ? positiveClass : negativeClass}}`;
+                    }}
+                }}
+                
                 async function updateStatus() {{
                     try {{
                         const response = await fetch('/api/status');
@@ -353,17 +376,26 @@ async def handle_log(request):
                         profitRateElement.className = `status-value ${{data.profit_rate >= 0 ? 'profit' : 'loss'}}`;
                         
                         // Update trade history
-                        document.querySelector('#trade-history').innerHTML = data.trade_history.map(function(trade) {{ return ` 
-                            <tr class="border-b">
-                                <td class="py-2">${{trade.timestamp}}</td>
-                                <td class="py-2 ${{trade.side === 'buy' ? 'text-green-500' : 'text-red-500'}}">
-                                    ${{trade.side === 'buy' ? 'Buy' : 'Sell'}}
-                                </td>
-                                <td class="py-2">${{parseFloat(trade.price).toFixed(2)}}</td>
-                                <td class="py-2">${{parseFloat(trade.amount).toFixed(4)}}</td>
-                                <td class="py-2">${{(parseFloat(trade.price) * parseFloat(trade.amount)).toFixed(2)}}</td>
-                            </tr>
-                        `; }}).join('');
+                        const tradeHistoryEl = document.querySelector('#trade-history');
+                        if (tradeHistoryEl && Array.isArray(data.trade_history)) {{
+                            tradeHistoryEl.innerHTML = data.trade_history.map(trade => {{
+                                const price = parseFloat(trade.price);
+                                const amount = parseFloat(trade.amount);
+                                const total = price * amount;
+                                const sideClass = trade.side === 'buy' ? 'text-green-500' : 'text-red-500';
+                                const sideText = trade.side === 'buy' ? 'Buy' : 'Sell';
+                                
+                                return `
+                                    <tr class="border-b">
+                                        <td class="py-2">${{trade.timestamp}}</td>
+                                        <td class="py-2 ${{sideClass}}">${{sideText}}</td>
+                                        <td class="py-2">${{price.toFixed(2)}}</td>
+                                        <td class="py-2">${{amount.toFixed(4)}}</td>
+                                        <td class="py-2">${{total.toFixed(2)}}</td>
+                                    </tr>
+                                `;
+                            }}).join('');
+                        }}
                         
                         // Update target order amount
                         document.querySelector('#target-order-amount').textContent = 
@@ -391,6 +423,8 @@ async def handle_log(request):
     except Exception as e:
         return web.Response(text=f"Error: {str(e)}", status=500)
 
+
+start_time = time.time()
 
 async def handle_status(request):
     """Handle status API requests"""
@@ -428,7 +462,7 @@ async def handle_status(request):
 
         # Calculate system uptime
         current_time = time.time()
-        uptime_seconds = int(current_time - trader.start_time)
+        uptime_seconds = int(current_time - start_time)
         days, remainder = divmod(uptime_seconds, 86400)
         hours, remainder = divmod(remainder, 3600)
         minutes, seconds = divmod(remainder, 60)
@@ -478,9 +512,7 @@ async def handle_status(request):
         ]  # Take only the last 10 trades
 
         # Calculate target order amount (10% of total assets)
-        target_order_amount = await trader._calculate_order_amount(
-            "buy"
-        )  # buy/sell result is the same
+        target_order_amount = await trader._calculate_order_amount()
 
         # Get position percentage - use risk manager's method to get the most accurate position ratio
         position_ratio = await position_manager.get_position_ratio()
@@ -567,14 +599,14 @@ async def start_web_server(
     app.router.add_get("/api/status", handle_status)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 58181)
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
     await site.start()
 
     # Print access addresses
     local_ip = "localhost"  # Or use actual IP
     logging.info(f"Web server started:")
-    logging.info(f"- Local access: http://{local_ip}:58181/{home_prefix}")
-    logging.info(f"- LAN access: http://0.0.0.0:58181/{home_prefix}")
+    logging.info(f"- Local access: http://{local_ip}:8080/{home_prefix}")
+    logging.info(f"- LAN access: http://0.0.0.0:8080/{home_prefix}")
 
 
 async def handle_log_content(request):
