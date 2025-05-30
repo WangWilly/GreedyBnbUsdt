@@ -33,7 +33,7 @@ class ManagerOrder:
         self.order_states[order["id"]] = {"created": datetime.now(), "status": "open"}
 
     def add_order(self, order):
-        """添加新订单到跟踪器"""
+        """Add new order to tracker"""
         try:
             order_id = order["id"]
             self.orders[order_id] = {
@@ -44,94 +44,94 @@ class ManagerOrder:
             }
             self.trade_count += 1
             self.logger.info(
-                f"订单已添加到跟踪器 | ID: {order_id} | 状态: {order['status']}"
+                f"Order added to tracker | ID: {order_id} | Status: {order['status']}"
             )
         except Exception as e:
-            self.logger.error(f"添加订单失败: {str(e)}")
+            self.logger.error(f"Failed to add order: {str(e)}")
             raise
 
     def reset(self):
         self.trade_count = 0
         self.orders.clear()
-        self.logger.info("订单跟踪器已重置")
+        self.logger.info("Order tracker reset")
 
     def get_trade_history(self):
-        """获取交易历史"""
+        """Get trade history"""
         return self.trade_history
 
     def load_trade_history(self):
-        """从文件加载历史交易记录"""
+        """Load trade history from file"""
         try:
             if os.path.exists(self.history_file):
                 with open(self.history_file, "r", encoding="utf-8") as f:
                     self.trade_history = json.load(f)
-                self.logger.info(f"加载了 {len(self.trade_history)} 条历史交易记录")
+                self.logger.info(f"Loaded {len(self.trade_history)} historical trades")
         except Exception as e:
-            self.logger.error(f"加载历史交易记录失败: {str(e)}")
+            self.logger.error(f"Failed to load trade history: {str(e)}")
 
     def save_trade_history(self):
-        """将当前交易历史保存到文件"""
+        """Save current trade history to file"""
         try:
-            # 先备份当前文件
+            # Backup current file first
             self.backup_history()
-            # 保存当前记录
+            # Save current records
             with open(self.history_file, "w", encoding="utf-8") as f:
                 json.dump(self.trade_history, f, ensure_ascii=False, indent=2)
             self.logger.info(
-                f"已将 {len(self.trade_history)} 条交易记录保存到 {self.history_file}"
+                f"Saved {len(self.trade_history)} trade records to {self.history_file}"
             )
         except Exception as e:
-            self.logger.error(f"保存交易记录失败: {str(e)}")
+            self.logger.error(f"Failed to save trade history: {str(e)}")
 
     def backup_history(self):
-        """备份交易历史"""
+        """Backup trade history"""
         try:
             if os.path.exists(self.history_file):
                 shutil.copy2(self.history_file, self.backup_file)
-                self.logger.info("交易历史备份成功")
+                self.logger.info("Trade history backup successful")
         except Exception as e:
-            self.logger.error(f"备份交易历史失败: {str(e)}")
+            self.logger.error(f"Failed to backup trade history: {str(e)}")
 
     def add_trade(self, trade):
-        """添加交易记录"""
-        # 验证必要字段
+        """Add trade record"""
+        # Validate required fields
         required_fields = ["timestamp", "side", "price", "amount", "order_id"]
         for field in required_fields:
             if field not in trade:
-                self.logger.error(f"交易记录缺少必要字段: {field}")
+                self.logger.error(f"Trade record missing required field: {field}")
                 return
 
-        # 验证数据类型
+        # Validate data types
         try:
             trade["timestamp"] = float(trade["timestamp"])
             trade["price"] = float(trade["price"])
             trade["amount"] = float(trade["amount"])
         except (ValueError, TypeError) as e:
-            self.logger.error(f"交易记录数据类型错误: {str(e)}")
+            self.logger.error(f"Trade record data type error: {str(e)}")
             return
 
-        self.logger.info(f"添加交易记录: {trade}")
+        self.logger.info(f"Adding trade record: {trade}")
         self.trade_history.append(trade)
         if len(self.trade_history) > 100:
             self.trade_history = self.trade_history[-100:]
         try:
-            # 先备份当前文件
+            # Backup current file first
             self.backup_history()
             with open(self.history_file, "w", encoding="utf-8") as f:
                 json.dump(self.trade_history, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            self.logger.error(f"保存交易记录失败: {str(e)}")
+            self.logger.error(f"Failed to save trade record: {str(e)}")
 
     def update_order(self, order_id, status, profit=0):
         if order_id in self.orders:
             self.orders[order_id]["status"] = status
             self.orders[order_id]["profit"] = profit
             if status == "closed":
-                # 更新订单状态为已关闭
-                self.logger.info(f"订单已关闭 | ID: {order_id} | 利润: {profit}")
+                # Update order status to closed
+                self.logger.info(f"Order closed | ID: {order_id} | Profit: {profit}")
 
     def get_statistics(self):
-        """获取交易统计信息"""
+        """Get trade statistics"""
         try:
             if not self.trade_history:
                 return {
@@ -151,7 +151,7 @@ class ManagerOrder:
             total_profit = sum(t["profit"] for t in self.trade_history)
             profits = [t["profit"] for t in self.trade_history]
 
-            # 计算最大连续盈利和亏损
+            # Calculate max consecutive wins and losses
             current_streak = 1
             max_win_streak = 0
             max_loss_streak = 0
@@ -185,68 +185,68 @@ class ManagerOrder:
                 "consecutive_losses": max_loss_streak,
             }
         except Exception as e:
-            self.logger.error(f"计算统计信息失败: {str(e)}")
+            self.logger.error(f"Failed to calculate statistics: {str(e)}")
             return None
 
     def archive_old_trades(self):
-        """归档旧的交易记录"""
+        """Archive old trade records"""
         try:
             if len(self.trade_history) <= 100:
                 return
 
-            # 获取当前月份作为归档文件名
+            # Get current month as archive filename
             current_month = datetime.now().strftime("%Y%m")
             archive_file = os.path.join(
                 self.archive_dir, f"trades_{current_month}.json"
             )
 
-            # 将旧记录移动到归档
+            # Move old records to archive
             old_trades = self.trade_history[:-100]
 
-            # 如果归档文件存在，先读取并合并
+            # If archive file exists, read and merge
             if os.path.exists(archive_file):
                 with open(archive_file, "r", encoding="utf-8") as f:
                     archived_trades = json.load(f)
                     old_trades = archived_trades + old_trades
 
-            # 保存归档
+            # Save archive
             with open(archive_file, "w", encoding="utf-8") as f:
                 json.dump(old_trades, f, ensure_ascii=False, indent=2)
 
-            # 更新当前交易历史
+            # Update current trade history
             self.trade_history = self.trade_history[-100:]
-            self.logger.info(f"已归档 {len(old_trades)} 条交易记录到 {archive_file}")
+            self.logger.info(f"Archived {len(old_trades)} trade records to {archive_file}")
         except Exception as e:
-            self.logger.error(f"归档交易记录失败: {str(e)}")
+            self.logger.error(f"Failed to archive trade records: {str(e)}")
 
     def clean_old_archives(self):
-        """清理过期的归档文件"""
+        """Clean expired archive files"""
         try:
             archive_files = [
                 f for f in os.listdir(self.archive_dir) if f.startswith("trades_")
             ]
-            archive_files.sort(reverse=True)  # 按时间倒序排列
+            archive_files.sort(reverse=True)  # Sort by time descending
 
-            # 保留最近12个月的归档
+            # Keep only the most recent 12 months of archives
             if len(archive_files) > self.max_archive_months:
                 for old_file in archive_files[self.max_archive_months :]:
                     file_path = os.path.join(self.archive_dir, old_file)
                     os.remove(file_path)
-                    self.logger.info(f"已删除过期归档: {old_file}")
+                    self.logger.info(f"Deleted expired archive: {old_file}")
         except Exception as e:
-            self.logger.error(f"清理归档失败: {str(e)}")
+            self.logger.error(f"Failed to clean archives: {str(e)}")
 
     def analyze_trades(self, days=30):
-        """分析最近交易表现"""
+        """Analyze recent trading performance"""
         try:
             if not self.trade_history:
                 return None
 
-            # 计算时间范围
+            # Calculate time range
             now = time.time()
             start_time = now - (days * 24 * 3600)
 
-            # 筛选时间范围内的交易
+            # Filter trades within time range
             recent_trades = [
                 t for t in self.trade_history if t["timestamp"] > start_time
             ]
@@ -254,7 +254,7 @@ class ManagerOrder:
             if not recent_trades:
                 return None
 
-            # 按天统计
+            # Daily statistics
             daily_stats = {}
             for trade in recent_trades:
                 trade_date = datetime.fromtimestamp(trade["timestamp"]).strftime(
@@ -267,7 +267,7 @@ class ManagerOrder:
                 daily_stats[trade_date]["volume"] += trade["price"] * trade["amount"]
 
             return {
-                "period": f"最近{days}天",
+                "period": f"Last {days} days",
                 "total_days": len(daily_stats),
                 "active_days": len(
                     [d for d in daily_stats.values() if d["trades"] > 0]
@@ -289,11 +289,11 @@ class ManagerOrder:
                 ),
             }
         except Exception as e:
-            self.logger.error(f"分析交易失败: {str(e)}")
+            self.logger.error(f"Failed to analyze trades: {str(e)}")
             return None
 
     def export_trades(self, format="csv"):
-        """导出交易记录"""
+        """Export trade records"""
         try:
             if not self.trade_history:
                 return False
@@ -327,8 +327,8 @@ class ManagerOrder:
                 with open(export_file, "w", encoding="utf-8") as f:
                     json.dump(self.trade_history, f, ensure_ascii=False, indent=2)
 
-            self.logger.info(f"交易记录已导出到: {export_file}")
+            self.logger.info(f"Trade records exported to: {export_file}")
             return True
         except Exception as e:
-            self.logger.error(f"导出交易记录失败: {str(e)}")
+            self.logger.error(f"Failed to export trade records: {str(e)}")
             return False

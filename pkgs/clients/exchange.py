@@ -63,18 +63,18 @@ class ExchangeClient:
                 "options": {
                     "defaultType": "spot",
                     "fetchMarkets": {
-                        "spot": True,  # 启用现货市场
-                        "margin": False,  # 明确禁用杠杆
-                        "swap": False,  # 禁用合约
-                        "future": False,  # 禁用期货
+                        "spot": True,  # Enable spot market
+                        "margin": False,  # Explicitly disable margin
+                        "swap": False,  # Disable swap
+                        "future": False,  # Disable futures
                     },
                     "fetchCurrencies": False,
-                    "recvWindow": 5000,  # 固定接收窗口
-                    "adjustForTimeDifference": True,  # 启用时间调整
+                    "recvWindow": 5000,  # Fixed receive window
+                    "adjustForTimeDifference": True,  # Enable time adjustment
                     "warnOnFetchOpenOrdersWithoutSymbol": False,
                     "createMarketBuyOrderRequiresPrice": False,
                 },
-                "aiohttp_proxy": cfg.HTTP_PROXY,  # 使用环境变量中的代理配置
+                "aiohttp_proxy": cfg.HTTP_PROXY,  # Use proxy config from environment variable
                 "verbose": cfg.DEBUG_MODE,
             }
         )
@@ -87,7 +87,7 @@ class ExchangeClient:
         self.time_diff = 0
         self.balance_cache = {"timestamp": 0, "data": None}
         self.funding_balance_cache = {"timestamp": 0, "data": {}}
-        self.cache_ttl = 30  # 缓存有效期（秒）
+        self.cache_ttl = 30  # Cache validity period (seconds)
 
     ############################################################################
     # core methods
@@ -139,46 +139,51 @@ class ExchangeClient:
 
     async def create_order(self, symbol, type, side, amount, price):
         try:
-            # 在下单前重新同步时间
+            # Resync time before placing order
             await self.sync_time()
-            # 添加时间戳到请求参数
+            # Add timestamp to request params
             params = {
                 "timestamp": int(time.time() * 1000 + self.time_diff),
                 "recvWindow": 5000,
+                # "test": True,
             }
             return await self.exchange.create_order(
                 symbol, type, side, amount, price, params
             )
         except Exception as e:
-            self.logger.error(f"下单失败: {str(e)}")
+            self.logger.error(f"Order placement failed: {str(e)}")
             raise
 
     async def create_market_order(
         self,
         symbol: str,
-        side: str,  # 只能是 'buy' 或 'sell'
+        side: str,  # must be 'buy' or 'sell'
         amount: float,
         params: dict | None = None,
     ):
         """
-        业务层需要的『市价单快捷封装』。
-        实际还是调 ccxt 的 create_order，只是把 type 固定为 'market'。
+        Convenience wrapper for market orders.
+        Actually calls ccxt's create_order with type fixed as 'market'.
         """
-        # 确保有 params 字典
+        # Ensure params is a dict
         params = params or {}
 
-        # 下单前同步时间，避免 -1021 错误
+        # Sync time before placing order to avoid -1021 error
         await self.sync_time()
         params.update(
-            {"timestamp": int(time.time() * 1000 + self.time_diff), "recvWindow": 5000}
+            {
+                "timestamp": int(time.time() * 1000 + self.time_diff),
+                "recvWindow": 5000,
+                # "test": True,
+            }
         )
 
         order = await self.exchange.create_order(
             symbol=symbol,
             type="market",
-            side=side.lower(),  # ccxt 规范小写
+            side=side.lower(),  # ccxt expects lowercase
             amount=amount,
-            price=None,  # 市价单 price 必须是 None
+            price=None,  # price must be None for market orders
             params=params,
         )
         return order
@@ -191,11 +196,11 @@ class ExchangeClient:
         return await self.exchange.fetch_order(order_id, symbol, params)
 
     async def fetch_open_orders(self, symbol):
-        """获取当前未成交订单"""
+        """Fetch current open orders"""
         return await self.exchange.fetch_open_orders(symbol)
 
     async def cancel_order(self, order_id, symbol, params=None):
-        """取消指定订单"""
+        """Cancel specified order"""
         if params is None:
             params = {}
         params["timestamp"] = int(time.time() * 1000 + self.time_diff)
@@ -203,21 +208,21 @@ class ExchangeClient:
         return await self.exchange.cancel_order(order_id, symbol, params)
 
     async def close(self):
-        """关闭交易所连接"""
+        """Close exchange connection"""
         try:
             if self.exchange:
                 await self.exchange.close()
-                self.logger.info("交易所连接已安全关闭")
+                self.logger.info("Exchange connection closed safely")
         except Exception as e:
-            self.logger.error(f"关闭连接时发生错误: {str(e)}")
+            self.logger.error(f"Error occurred while closing connection: {str(e)}")
 
     async def fetch_order_book(self, symbol, limit=5):
-        """获取订单簿数据"""
+        """Fetch order book data"""
         try:
             market = self.exchange.market(symbol)
             return await self.exchange.fetch_order_book(market["id"], limit=limit)
         except Exception as e:
-            self.logger.error(f"获取订单簿失败: {str(e)}")
+            self.logger.error(f"Failed to fetch order book: {str(e)}")
             raise
 
     ############################################################################
@@ -228,7 +233,7 @@ class ExchangeClient:
         if not self.markets_loaded:
             await self.load_markets()
         try:
-            # 确保使用市场ID
+            # Ensure using market ID
             market = self.exchange.market(symbol)
             trades = await self.exchange.fetch_my_trades(market["id"], limit=limit)
             self.logger.info(f"Fetched {len(trades)} trades for {symbol}")
@@ -247,10 +252,10 @@ class ExchangeClient:
             params["timestamp"] = int(time.time() * 1000) + self.time_diff
             balance = await self.exchange.fetch_balance(params)
 
-            # 获取理财账户余额
+            # Get funding account balance
             funding_balance = await self.fetch_funding_balance()
 
-            # 合并现货和理财余额
+            # Merge spot and funding balances
             for asset, amount in funding_balance.items():
                 if asset not in balance["total"]:
                     balance["total"][asset] = 0
@@ -258,28 +263,28 @@ class ExchangeClient:
                     balance["free"][asset] = 0
                 balance["total"][asset] += amount
 
-            self.logger.debug(f"账户余额概要: {balance['total']}")
+            self.logger.debug(f"Account balance summary: {balance['total']}")
             self.balance_cache = {"timestamp": now, "data": balance}
             return balance
         except Exception as e:
-            self.logger.error(f"获取余额失败: {str(e)}")
-            # 出错时不抛出异常，而是返回一个空的但结构完整的余额字典
+            self.logger.error(f"Failed to fetch balance: {str(e)}")
+            # On error, return an empty but structurally complete balance dict
             return {"free": {}, "used": {}, "total": {}}
 
     async def fetch_funding_balance(self):
         now = time.time()
 
-        # 如果缓存有效，直接返回缓存数据
+        # If cache is valid, return cached data
         if now - self.funding_balance_cache["timestamp"] < self.cache_ttl:
             return self.funding_balance_cache["data"]
 
         try:
-            # 使用新的Simple Earn API
+            # Use new Simple Earn API
             result = await self.exchange.sapi_get_simple_earn_flexible_position()
-            self.logger.debug(f"理财账户原始数据: {result}")
+            self.logger.debug(f"Funding account raw data: {result}")
             balances = {}
 
-            # 处理返回的数据结构
+            # Handle returned data structure
             data = result.get("rows", []) if isinstance(result, dict) else result
 
             for item in data:
@@ -287,11 +292,11 @@ class ExchangeClient:
                 amount = float(item.get("totalAmount", 0) or item.get("amount", 0))
                 balances[asset] = amount
 
-            # 只在余额发生显著变化时打印日志
+            # Only log when balance changes significantly
             if not self.funding_balance_cache.get("data"):
-                self.logger.info(f"理财账户余额: {balances}")
+                self.logger.info(f"Funding account balance: {balances}")
             else:
-                # 检查是否有显著变化（超过0.1%）
+                # Check for significant change (>0.1%)
                 old_balances = self.funding_balance_cache["data"]
                 significant_change = False
                 for asset, amount in balances.items():
@@ -300,36 +305,36 @@ class ExchangeClient:
                         if amount != 0:
                             significant_change = True
                             break
-                    elif abs((amount - old_amount) / old_amount) > 0.001:  # 0.1%的变化
+                    elif abs((amount - old_amount) / old_amount) > 0.001:
                         significant_change = True
                         break
 
                 if significant_change:
-                    self.logger.info(f"理财账户余额更新: {balances}")
+                    self.logger.info(f"Funding account balance updated: {balances}")
 
-            # 更新缓存
+            # Update cache
             self.funding_balance_cache = {"timestamp": now, "data": balances}
 
             return balances
         except Exception as e:
-            self.logger.error(f"获取理财账户余额失败: {str(e)}")
+            self.logger.error(f"Failed to fetch funding account balance: {str(e)}")
             return {}
 
     async def fetch_ticker(self, symbol):
         self.logger.debug(f"Fetching ticker for {symbol}...")
         start = datetime.now()
         try:
-            # 使用市场ID进行请求
+            # Use market ID for request
             market = self.exchange.market(symbol)
             ticker = await self.exchange.fetch_ticker(market["id"])
             latency = (datetime.now() - start).total_seconds()
             self.logger.debug(
-                f"获取行情成功 | 延迟: {latency:.3f}s | 最新价: {ticker['last']}"
+                f"Fetched ticker successfully | Latency: {latency:.3f}s | Last price: {ticker['last']}"
             )
             return ticker
         except Exception as e:
-            self.logger.error(f"获取行情失败: {str(e)}")
-            self.logger.debug(f"请求参数: symbol={symbol}")
+            self.logger.error(f"Failed to fetch ticker: {str(e)}")
+            self.logger.debug(f"Request params: symbol={symbol}")
             raise
 
     ############################################################################
@@ -337,45 +342,10 @@ class ExchangeClient:
 
     async def transfer_to_savings(self, asset: str, amount):
         try:
-            # 获取产品ID
+            # Get product ID
             product_id = await self.__get_flexible_product_id(asset)
 
-            # 格式化金额，确保精度正确
-            if asset == "USDT":
-                formatted_amount = "{:.2f}".format(float(amount))  # USDT保留2位小数
-            elif asset == "BNB":
-                formatted_amount = "{:.8f}".format(float(amount))  # BNB保留8位小数
-            else:
-                formatted_amount = str(amount)
-
-            params = {
-                "asset": asset,
-                "amount": formatted_amount,
-                "productId": product_id,
-                "timestamp": int(time.time() * 1000 + self.time_diff),
-            }
-            self.logger.info(f"开始申购: {formatted_amount} {asset} 到活期理财")
-            result = await self.exchange.sapi_post_simple_earn_flexible_subscribe(
-                params
-            )
-            self.logger.info(f"划转成功: {result}")
-
-            # 申购后清除余额缓存，确保下次获取最新余额
-            self.balance_cache = {"timestamp": 0, "data": None}
-            self.funding_balance_cache = {"timestamp": 0, "data": {}}
-
-            return result
-        except Exception as e:
-            self.logger.error(f"申购失败: {str(e)}")
-            raise
-
-    async def transfer_to_spot(self, asset: str, amount):
-        """从活期理财赎回到现货账户"""
-        try:
-            # 获取产品ID
-            product_id = await self.get_flexible_product_id(asset)
-
-            # 格式化金额，确保精度正确
+            # Format amount with correct precision
             if asset == "USDT":
                 formatted_amount = "{:.2f}".format(float(amount))
             elif asset == "BNB":
@@ -388,19 +358,54 @@ class ExchangeClient:
                 "amount": formatted_amount,
                 "productId": product_id,
                 "timestamp": int(time.time() * 1000 + self.time_diff),
-                "redeemType": "FAST",  # 快速赎回
             }
-            self.logger.info(f"开始赎回: {formatted_amount} {asset} 到现货")
-            result = await self.exchange.sapi_post_simple_earn_flexible_redeem(params)
-            self.logger.info(f"划转成功: {result}")
+            self.logger.info(f"Starting subscription: {formatted_amount} {asset} to flexible savings")
+            result = await self.exchange.sapi_post_simple_earn_flexible_subscribe(
+                params
+            )
+            self.logger.info(f"Transfer successful: {result}")
 
-            # 赎回后清除余额缓存，确保下次获取最新余额
+            # Clear balance cache after subscription to ensure next fetch is up to date
             self.balance_cache = {"timestamp": 0, "data": None}
             self.funding_balance_cache = {"timestamp": 0, "data": {}}
 
             return result
         except Exception as e:
-            self.logger.error(f"赎回失败: {str(e)}")
+            self.logger.error(f"Subscription failed: {str(e)}")
+            raise
+
+    async def transfer_to_spot(self, asset: str, amount):
+        """Redeem from flexible savings to spot account"""
+        try:
+            # Get product ID
+            product_id = await self.get_flexible_product_id(asset)
+
+            # Format amount with correct precision
+            if asset == "USDT":
+                formatted_amount = "{:.2f}".format(float(amount))
+            elif asset == "BNB":
+                formatted_amount = "{:.8f}".format(float(amount))
+            else:
+                formatted_amount = str(amount)
+
+            params = {
+                "asset": asset,
+                "amount": formatted_amount,
+                "productId": product_id,
+                "timestamp": int(time.time() * 1000 + self.time_diff),
+                "redeemType": "FAST",  # Fast redemption
+            }
+            self.logger.info(f"Starting redemption: {formatted_amount} {asset} to spot")
+            result = await self.exchange.sapi_post_simple_earn_flexible_redeem(params)
+            self.logger.info(f"Transfer successful: {result}")
+
+            # Clear balance cache after redemption to ensure next fetch is up to date
+            self.balance_cache = {"timestamp": 0, "data": None}
+            self.funding_balance_cache = {"timestamp": 0, "data": {}}
+
+            return result
+        except Exception as e:
+            self.logger.error(f"Redemption failed: {str(e)}")
             raise
 
     ############################################################################
@@ -418,24 +423,24 @@ class ExchangeClient:
             self.logger.error(f"Time synchronization failed: {str(e)}")
 
     async def __get_flexible_product_id(self, asset):
-        """获取指定资产的活期理财产品ID"""
+        """Get flexible savings product ID for the specified asset"""
         try:
             params = {
                 "asset": asset,
                 "timestamp": int(time.time() * 1000 + self.time_diff),
-                "current": 1,  # 当前页
-                "size": 100,  # 每页数量
+                "current": 1,  # Current page
+                "size": 100,  # Items per page
             }
             result = await self.exchange.sapi_get_simple_earn_flexible_list(params)
             products = result.get("rows", [])
 
-            # 查找对应资产的活期理财产品
+            # Find the flexible savings product for the asset
             for product in products:
                 if product["asset"] == asset and product["status"] == "PURCHASING":
-                    self.logger.info(f"找到{asset}活期理财产品: {product['productId']}")
+                    self.logger.info(f"Found flexible savings product for {asset}: {product['productId']}")
                     return product["productId"]
 
-            raise ValueError(f"未找到{asset}的可用活期理财产品")
+            raise ValueError(f"No available flexible savings product found for {asset}")
         except Exception as e:
-            self.logger.error(f"获取活期理财产品失败: {str(e)}")
+            self.logger.error(f"Failed to get flexible savings product: {str(e)}")
             raise

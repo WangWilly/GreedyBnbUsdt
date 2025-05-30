@@ -69,16 +69,16 @@ async def main():
         await asyncio.gather(web_server_task, trading_task)
 
     except Exception as e:
-        error_msg = f"启动失败: {str(e)}\n{traceback.format_exc()}"
+        error_msg = f"Startup failed: {str(e)}\n{traceback.format_exc()}"
         logger.error(error_msg)
 
     finally:
         if "trader" in locals():
             try:
                 await trader.exchange.close()
-                logger.info("交易所连接已关闭")
+                logger.info("Exchange connection closed")
             except Exception as e:
-                logger.error(f"关闭连接时发生错误: {str(e)}")
+                logger.error(f"Error occurred while closing connection: {str(e)}")
 
 
 if __name__ == "__main__":

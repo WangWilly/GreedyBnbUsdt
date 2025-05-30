@@ -13,12 +13,12 @@ class ManagerAdvancedRiskConfig(BaseSettings):
     MIN_POSITION_RATIO: float = Field(
         default=0.1,
         alias=PREFIX + "MIN_POSITION_RATIO",
-        description="最小底仓比例，低于此比例将触发底仓保护",
+        description="Minimum base position ratio; triggers base position protection if below this value",
     )
     MAX_POSITION_RATIO: float = Field(
         default=0.9,
         alias=PREFIX + "MAX_POSITION_RATIO",
-        description="最大仓位比例，超过此比例将触发风控",
+        description="Maximum position ratio; triggers risk control if exceeded",
     )
 
 
@@ -38,28 +38,28 @@ class ManagerAdvancedRisk:
         try:
             position_ratio = await self.position_manager.get_position_ratio()
 
-            # 只在仓位比例变化超过0.1%时打印日志
+            # Only log when position ratio changes by more than 0.1%
             if (
                 self.last_position_ratio == 0
                 or abs(position_ratio - self.last_position_ratio) > 0.001
             ):
                 self.logger.info(
-                    f"风控检查 | "
-                    f"当前仓位比例: {position_ratio:.2%} | "
-                    f"最大允许比例: {self.cfg.MAX_POSITION_RATIO:.2%} | "
-                    f"最小底仓比例: {self.cfg.MIN_POSITION_RATIO:.2%}"
+                    f"Risk check | "
+                    f"Current position ratio: {position_ratio:.2%} | "
+                    f"Max allowed: {self.cfg.MAX_POSITION_RATIO:.2%} | "
+                    f"Min base ratio: {self.cfg.MIN_POSITION_RATIO:.2%}"
                 )
                 self.last_position_ratio = position_ratio
 
             if position_ratio < self.cfg.MIN_POSITION_RATIO:
-                self.logger.warning(f"底仓保护触发 | 当前: {position_ratio:.2%}")
+                self.logger.warning(f"Base position protection triggered | Current: {position_ratio:.2%}")
                 return True
 
             if position_ratio > self.cfg.MAX_POSITION_RATIO:
-                self.logger.warning(f"仓位超限 | 当前: {position_ratio:.2%}")
+                self.logger.warning(f"Position limit exceeded | Current: {position_ratio:.2%}")
                 return True
 
             return False
         except Exception as e:
-            self.logger.error(f"风控检查失败: {str(e)}")
+            self.logger.error(f"Risk check failed: {str(e)}")
             return False
