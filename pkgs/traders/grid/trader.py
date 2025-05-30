@@ -1,6 +1,7 @@
 import asyncio
 import time
 import numpy as np
+from typing import Awaitable, TypeVar, Callable, Tuple
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -11,6 +12,9 @@ from pkgs.managers.position.manager import ManagerPosition
 from pkgs.utils.logging import get_logger_named
 from pkgs.clients.exchange import ExchangeClient
 from pkgs.managers.order.manager import ManagerOrder
+from pkgs.utils.exception import try_async
+
+T = TypeVar("T")
 
 ################################################################################
 
@@ -180,160 +184,190 @@ class TraderGrid:
     ############################################################################
     # initialization and setup
 
+    # Updated with type inference
+    async def _try(
+        self, func: Callable[..., Awaitable[T]], *args, **kwargs
+    ) -> Tuple[T, None] | Tuple[None, Exception]:
+        """
+        Helper method to handle errors in Go style within this class.
+        Uses type inference to preserve the return type of the called function.
+
+        Args:
+            func: The async function to call
+            *args: Positional arguments to pass to the function
+            **kwargs: Keyword arguments to pass to the function
+
+        Returns:
+            A tuple containing either (result, None) or (None, error)
+        """
+        return await try_async(self.logger, func, *args, **kwargs)
+
     async def initialize(self):
         if self.initialized:
-            return
+            return True, None
 
         self.logger.info("Initializing TraderGrid...")
-        try:
-            # Initialize position manager first
-            if not await self.position_manager.initialize():
-                raise RuntimeError("Failed to initialize position manager")
-
-            # Check and transfer initial funds in spot account
-            await self._check_and_transfer_initial_funds()
-
-            # Set base price if not provided
-            if self.base_price <= 0:
-                self.base_price = await self.position_manager.get_latest_price()
-                self.logger.info(f"Apply latest price as base price: {self.base_price}")
-
-            if self.base_price is None or self.base_price <= 0:
-                raise ValueError(
-                    "Failed to fetch initial base price, please check the market data."
-                )
-
-            self.logger.info(f"Initial base price set to: {self.base_price} USDT")
-
-            # Fetch and update the latest 10 trade records
-            try:
-                self.logger.info("Fetching latest 10 trade records...")
-                latest_trades = await self.exchange.fetch_my_trades(
-                    self.cfg.SYMBOL, limit=10
-                )
-                if latest_trades:
-                    # Convert format to match OrderTracker's expected format (if needed)
-                    formatted_trades = []
-                    for trade in latest_trades:
-                        # Note: The trade structure returned by ccxt may need adjustment
-                        # Assume OrderTracker needs timestamp(seconds), side, price, amount, profit, order_id
-                        # Profit may need subsequent calculation or default to 0
-                        formatted_trade = {
-                            "timestamp": trade["timestamp"] / 1000,  # ms to s
-                            "side": trade["side"],
-                            "price": trade["price"],
-                            "amount": trade["amount"],
-                            "cost": trade["cost"],  # Keep original cost
-                            "fee": trade.get("fee", {}).get("cost", 0),  # Extract fee
-                            "order_id": trade.get("order"),  # Associated order ID
-                            "profit": 0,  # Set to 0 during initialization, or calculate later
-                        }
-                        formatted_trades.append(formatted_trade)
-
-                    # Directly replace history in OrderTracker
-                    self.order_manager.trade_history = formatted_trades
-                    self.order_manager.save_trade_history()  # Save to file
-                    self.logger.info(
-                        f"History updated with the latest {len(formatted_trades)} trade records."
-                    )
-                else:
-                    self.logger.info("Failed to fetch latest trade records, will use local history.")
-            except Exception as trade_fetch_error:
-                self.logger.error(f"Error fetching or processing latest trade records: {trade_fetch_error}")
-
-            self.initialized = True
-        except Exception as e:
+        
+        # Initialize position manager first
+        initialized, err = await self._try(self.position_manager.initialize)
+        if err or not initialized:
             self.initialized = False
-            self.logger.error(f"Initialization failed: {str(e)}")
-            raise
+            err_msg = f"Failed to initialize position manager: {str(err) if err else 'Unknown reason'}"
+            self.logger.error(err_msg)
+            return False, Exception(err_msg)
+
+        # Check and transfer initial funds
+        _, err = await self._check_and_transfer_initial_funds()
+        if err:
+            self.logger.warning(f"Initial fund check had issues: {err}")
+            # Continue despite this error
+
+        # Set base price if not provided
+        if self.base_price <= 0:
+            price, err = await self._try(self.position_manager.get_latest_price)
+            if err or not price:
+                self.initialized = False
+                err_msg = "Failed to fetch initial base price"
+                self.logger.error(err_msg)
+                return False, Exception(err_msg)
+                
+            self.base_price = price
+            self.logger.info(f"Apply latest price as base price: {self.base_price}")
+
+        if self.base_price is None or self.base_price <= 0:
+            self.initialized = False
+            err_msg = "Failed to fetch initial base price, please check the market data."
+            self.logger.error(err_msg)
+            return False, Exception(err_msg)
+
+        self.logger.info(f"Initial base price set to: {self.base_price} USDT")
+
+        # Fetch and update the latest 10 trade records
+        trades, err = await self._try(self.exchange.fetch_my_trades, self.cfg.SYMBOL, limit=10)
+        if err:
+            self.logger.error(f"Error fetching trade records: {err}")
+        elif trades:
+            # Process trades
+            formatted_trades = []
+            for trade in trades:
+                formatted_trade = {
+                    "timestamp": trade["timestamp"] / 1000,  # ms to s
+                    "side": trade["side"],
+                    "price": trade["price"],
+                    "amount": trade["amount"],
+                    "cost": trade["cost"],
+                    "fee": trade.get("fee", {}).get("cost", 0),
+                    "order_id": trade.get("order"),
+                    "profit": 0,
+                }
+                formatted_trades.append(formatted_trade)
+
+            self.order_manager.trade_history = formatted_trades
+            self.order_manager.save_trade_history()
+            self.logger.info(f"History updated with the latest {len(formatted_trades)} trade records.")
+        else:
+            self.logger.info("No trade records found, will use local history.")
+
+        self.initialized = True
+        return True, None
 
     async def _check_and_transfer_initial_funds(self):
         """Check and transfer initial funds"""
-        try:
-            # Get spot and funding account balances
-            balance = (
-                await self.exchange.fetch_balance()
-            )
-            funding_balance = (
-                await self.exchange.fetch_funding_balance()
-            )
-            total_assets = await self.position_manager.get_total_assets()
-            current_price = await self.position_manager.get_latest_price()
+        # Get spot and funding account balances
+        balance, err_balance = await self._try(self.exchange.fetch_balance)
+        if err_balance:
+            return False, err_balance
+            
+        funding_balance, err_funding = await self._try(self.exchange.fetch_funding_balance)
+        if err_funding:
+            return False, err_funding
+            
+        total_assets, err_assets = await self._try(self.position_manager.get_total_assets)
+        if err_assets:
+            return False, err_assets
+            
+        current_price, err_price = await self._try(self.position_manager.get_latest_price)
+        if err_price:
+            return False, err_price
 
-            # Calculate target position (16% of total assets)
-            target_usdt = total_assets * 0.16
-            target_bnb = (total_assets * 0.16) / current_price
+        if current_price is None or current_price <= 0:
+            return False, Exception("Failed to fetch current price, cannot proceed with fund allocation.")
+        # Calculate target position (16% of total assets)
+        target_usdt = total_assets * 0.16
+        target_bnb = (total_assets * 0.16) / current_price
 
-            # Get spot balances
-            usdt_balance = float(balance["free"].get("USDT", 0))
-            bnb_balance = float(balance["free"].get("BNB", 0))
+        # Get spot balances
+        usdt_balance = float(balance["free"].get("USDT", 0))
+        bnb_balance = float(balance["free"].get("BNB", 0))
 
-            # Calculate total balances (spot + funding)
-            total_usdt = usdt_balance + float(funding_balance.get("USDT", 0))
-            total_bnb = bnb_balance + float(funding_balance.get("BNB", 0))
+        # Calculate total balances (spot + funding)
+        total_usdt = usdt_balance + float(funding_balance.get("USDT", 0))
+        total_bnb = bnb_balance + float(funding_balance.get("BNB", 0))
 
-            # Adjust USDT balance
-            if usdt_balance > target_usdt:
-                # Subscribe excess to savings
-                transfer_amount = usdt_balance - target_usdt
-                self.logger.info(f"Found transferable USDT: {transfer_amount}")
-                # --- Add minimum subscription amount check (>= 1 USDT) ---
-                if transfer_amount >= 1.0:
-                    try:
-                        await self.exchange.transfer_to_savings("USDT", transfer_amount)
-                        self.logger.info(f"Subscribed {transfer_amount:.2f} USDT to savings")
-                    except Exception as e_savings_usdt:
-                        self.logger.error(f"Failed to subscribe USDT to savings: {str(e_savings_usdt)}")
+        # Adjust USDT balance - using Go-like error handling
+        if usdt_balance > target_usdt:
+            transfer_amount = usdt_balance - target_usdt
+            self.logger.info(f"Found transferable USDT: {transfer_amount}")
+            
+            if transfer_amount >= 1.0:
+                _, err = await self._try(
+                    self.exchange.transfer_to_savings, "USDT", transfer_amount
+                )
+                if err:
+                    self.logger.error(f"Failed to subscribe USDT to savings: {err}")
                 else:
-                    self.logger.info(
-                        f"Transferable USDT ({transfer_amount:.2f}) is below minimum subscription amount 1.0 USDT, skipping subscription"
-                    )
-            elif usdt_balance < target_usdt:
-                # Redeem shortfall from savings
-                transfer_amount = target_usdt - usdt_balance
-                self.logger.info(f"Redeeming USDT from savings: {transfer_amount}")
-                # Similarly, redeeming USDT might require a minimum amount check, add if errors occur
-                try:
-                    await self.exchange.transfer_to_spot("USDT", transfer_amount)
-                    self.logger.info(f"Redeemed {transfer_amount:.2f} USDT from savings")
-                except Exception as e_spot_usdt:
-                    self.logger.error(f"Failed to redeem USDT from savings: {str(e_spot_usdt)}")
-
-            # Adjust BNB balance
-            if bnb_balance > target_bnb:
-                # Subscribe excess to savings
-                transfer_amount = bnb_balance - target_bnb
-                self.logger.info(f"Found transferable BNB: {transfer_amount}")
-                # --- Add minimum subscription amount check ---
-                if transfer_amount >= 0.01:
-                    try:
-                        await self.exchange.transfer_to_savings("BNB", transfer_amount)
-                        self.logger.info(f"Subscribed {transfer_amount:.4f} BNB to savings")
-                    except Exception as e_savings:
-                        self.logger.error(f"Failed to subscribe BNB to savings: {str(e_savings)}")
-                else:
-                    self.logger.info(
-                        f"Transferable BNB ({transfer_amount:.4f}) is below minimum subscription amount 0.01 BNB, skipping subscription"
-                    )
-            elif bnb_balance < target_bnb:
-                # Redeem shortfall from savings
-                transfer_amount = target_bnb - bnb_balance
-                self.logger.info(f"Redeeming BNB from savings: {transfer_amount}")
-                # Redemption operations usually have different minimum limits, or lower limits, no check added for now
-                # If redemption also encounters -6005, corresponding minimum redemption amount check needs to be added here
-                try:
-                    await self.exchange.transfer_to_spot("BNB", transfer_amount)
-                    self.logger.info(f"Redeemed {transfer_amount:.4f} BNB from savings")
-                except Exception as e_spot:
-                    self.logger.error(f"Failed to redeem BNB from savings: {str(e_spot)}")
-
-            self.logger.info(
-                f"Fund allocation complete\n" f"USDT: {total_usdt:.2f}\n" f"BNB: {total_bnb:.4f}"
+                    self.logger.info(f"Subscribed {transfer_amount:.2f} USDT to savings")
+            else:
+                self.logger.info(
+                    f"Transferable USDT ({transfer_amount:.2f}) is below minimum subscription amount 1.0 USDT, skipping subscription"
+                )
+        elif usdt_balance < target_usdt:
+            transfer_amount = target_usdt - usdt_balance
+            self.logger.info(f"Redeeming USDT from savings: {transfer_amount}")
+            
+            _, err = await self._try(
+                self.exchange.transfer_to_spot, "USDT", transfer_amount
             )
-        except Exception as e:
-            self.logger.error(f"Initial fund check failed: {str(e)}")
+            if err:
+                self.logger.error(f"Failed to redeem USDT from savings: {err}")
+            else:
+                self.logger.info(f"Redeemed {transfer_amount:.2f} USDT from savings")
 
-    ############################################################################
+        # Adjust BNB balance - using Go-like error handling
+        if bnb_balance > target_bnb:
+            transfer_amount = bnb_balance - target_bnb
+            self.logger.info(f"Found transferable BNB: {transfer_amount}")
+            
+            if transfer_amount >= 0.01:
+                _, err = await self._try(
+                    self.exchange.transfer_to_savings, "BNB", transfer_amount
+                )
+                if err:
+                    self.logger.error(f"Failed to subscribe BNB to savings: {err}")
+                else:
+                    self.logger.info(f"Subscribed {transfer_amount:.4f} BNB to savings")
+            else:
+                self.logger.info(
+                    f"Transferable BNB ({transfer_amount:.4f}) is below minimum subscription amount 0.01 BNB, skipping subscription"
+                )
+        elif bnb_balance < target_bnb:
+            transfer_amount = target_bnb - bnb_balance
+            self.logger.info(f"Redeeming BNB from savings: {transfer_amount}")
+            
+            _, err = await self._try(
+                self.exchange.transfer_to_spot, "BNB", transfer_amount
+            )
+            if err:
+                self.logger.error(f"Failed to redeem BNB from savings: {err}")
+            else:
+                self.logger.info(f"Redeemed {transfer_amount:.4f} BNB from savings")
+
+        self.logger.info(
+            f"Fund allocation complete\n"
+            f"USDT: {total_usdt:.2f}\n"
+            f"BNB: {total_bnb:.4f}"
+        )
+        return True, None
 
     async def _calculate_dynamic_interval_seconds(self):
         """Dynamically calculate grid adjustment interval in seconds based on volatility"""
@@ -413,23 +447,27 @@ class TraderGrid:
 
     async def _calculate_volatility(self):
         """Calculate price volatility"""
+        klines, err = await self._try(
+            self.exchange.fetch_ohlcv, 
+            self.cfg.SYMBOL, 
+            timeframe="1h", 
+            limit=self.cfg.VOLATILITY_WINDOW
+        )
+        
+        if err:
+            self.logger.error(f"Failed to fetch OHLCV data: {err}")
+            return 0, err
+
+        if not klines:
+            return 0, None
+
         try:
-            klines = await self.exchange.fetch_ohlcv(
-                self.cfg.SYMBOL, timeframe="1h", limit=self.cfg.VOLATILITY_WINDOW
-            )
-
-            if not klines:
-                return 0
-
             prices = [float(k[4]) for k in klines]  # Closing prices
             returns = np.diff(np.log(prices))
-
             volatility = np.std(returns) * np.sqrt(24 * 365)  # Annualized volatility
-            return volatility
-
+            return volatility, None
         except Exception as e:
-            self.logger.error(f"Failed to calculate volatility: {str(e)}")
-            return 0
+            return 0, e
 
     ############################################################################
 
@@ -822,55 +860,96 @@ class TraderGrid:
                     return False
         return False
 
+    async def _update_market_data(self):
+        """Update current price and other market data"""
+        current_price, err = await self._try(self.position_manager.get_latest_price)
+        if err or not current_price:
+            self.logger.warning(f"Failed to get latest price: {err if err else 'Unknown reason'}")
+            return False, err
+            
+        self.current_price = current_price
+        return True, None
+        
+    async def _check_trading_signals(self):
+        """Check trading signals and return the appropriate action or None"""
+        # Check sell signal first (priority over buy)
+        if await self._check_signal_with_retry(self._check_sell_signal, "Sell check"):
+            return "sell"
+            
+        # Then check buy signal
+        if await self._check_signal_with_retry(self._check_buy_signal, "Buy check"):
+            return "buy"
+            
+        # No signals detected
+        return None
+        
+    async def _handle_grid_adjustments(self):
+        """Handle periodic grid size adjustments"""
+        dynamic_interval_seconds = await self._calculate_dynamic_interval_seconds()
+        if time.time() - self.last_grid_adjust_time > dynamic_interval_seconds and not self.buying_or_selling:
+            self.logger.info(f"Time to adjust grid size (interval: {dynamic_interval_seconds/3600:.2f} hours).")
+            await self.adjust_grid_size()
+            self.last_grid_adjust_time = time.time()
+            
     async def main_loop(self):
         while True:
             try:
+                # Initialization
                 if not self.initialized:
-                    await self.initialize()
-                    await self.actioner_s1.update_daily_s1_levels()
+                    success, err = await self._try(self.initialize)
+                    if err or not success:
+                        self.logger.error(f"Initialization failed: {err}")
+                        await asyncio.sleep(30)
+                        continue
+                        
+                    _, err = await self._try(self.actioner_s1.update_daily_s1_levels)
+                    if err:
+                        self.logger.error(f"Failed to update S1 levels: {err}")
 
-                await self.actioner_s1.update_daily_s1_levels()
-
-                current_price = await self.position_manager.get_latest_price()
-                if not current_price:
+                # Update S1 levels and market data
+                _, err = await self._try(self.actioner_s1.update_daily_s1_levels)
+                if err:
+                    self.logger.warning(f"S1 level update failed: {err}")
+                
+                success, err = await self._try(self._update_market_data)
+                if err or not success:
+                    self.logger.warning(f"Market data update failed: {err}")
                     await asyncio.sleep(5)
                     continue
-                self.current_price = current_price
-
-                sell_signal = await self._check_signal_with_retry(
-                    self._check_sell_signal, "Sell check"
-                )
-                if sell_signal:
-                    await self.execute_order("sell")
+                    
+                # Check for trading signals
+                action, err = await self._try(self._check_trading_signals)
+                if err:
+                    self.logger.error(f"Signal check error: {err}")
+                    await asyncio.sleep(5)
+                    continue
+                
+                # Execute trade if signal detected
+                if action:
+                    _, err = await self._try(self.execute_order, action)
+                    if err:
+                        self.logger.error(f"Failed to execute {action} order: {err}")
                 else:
-                    buy_signal = await self._check_signal_with_retry(
-                        self._check_buy_signal, "Buy check"
-                    )
-                    if buy_signal:
-                        await self.execute_order("buy")
-                    else:
-                        if await self.risk_manager.multi_layer_check():
-                            await asyncio.sleep(5)
-                            continue
-
-                        await self.actioner_s1.check_and_execute()
-
-                        dynamic_interval_seconds = (
-                            await self._calculate_dynamic_interval_seconds()
-                        )
-                        if (
-                            time.time() - self.last_grid_adjust_time
-                            > dynamic_interval_seconds
-                            and not self.buying_or_selling
-                        ):
-                            self.logger.info(
-                                f"Time to adjust grid size (interval: {dynamic_interval_seconds/3600} hours)."
-                            )
-                            await self.adjust_grid_size()
-                            self.last_grid_adjust_time = time.time()
+                    # Handle risk management checks
+                    risk_check, err = await self._try(self.risk_manager.multi_layer_check)
+                    if err:
+                        self.logger.error(f"Risk check error: {err}")
+                    elif risk_check:
+                        await asyncio.sleep(5)
+                        continue
+                        
+                    # Run S1 strategy checks
+                    _, err = await self._try(self.actioner_s1.check_and_execute)
+                    if err:
+                        self.logger.warning(f"S1 strategy execution failed: {err}")
+                    
+                    # Handle periodic grid adjustments
+                    _, err = await self._try(self._handle_grid_adjustments)
+                    if err:
+                        self.logger.warning(f"Grid adjustment failed: {err}")
 
                 await asyncio.sleep(5)
-
+                
             except Exception as e:
                 self.logger.error(f"Main loop error: {e}", exc_info=True)
                 await asyncio.sleep(30)
