@@ -1,0 +1,9 @@
+*.env
+**/__pycache__/
+logs/
+playground/
+
+.git/
+.gitignore
+
+scripts/

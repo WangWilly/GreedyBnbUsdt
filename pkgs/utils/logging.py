@@ -18,7 +18,7 @@ class LogConfig(BaseSettings):
         description="Debug mode",
     )
     FORMAT: str = Field(
-        default="console",
+        default="server",
         alias=PREFIX + "FORMAT",
         description="Log format",
     )

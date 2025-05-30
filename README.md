@@ -56,6 +56,39 @@ To start the development server:
 ./scripts/dev.sh
 ```
 
+## Running with Docker
+
+You can also run the application using Docker:
+
+### Building the Docker Image
+
+```bash
+./scripts/build.sh
+```
+
+This will build the Docker image tagged as `greedybnbusdt/backend:latest`.
+
+### Running with Docker Compose
+
+1. Configure your environment variables in `deployments/docker-compose.yml` or use environment files:
+
+```bash
+# Edit the docker-compose.yml file to include your API credentials
+nano deployments/docker-compose.yml
+```
+
+2. Start the service:
+
+```bash
+./scripts/start.sh
+```
+
+This will start the application in detached mode, with the web interface accessible at `http://localhost:8080`.
+
+### Accessing Logs
+
+Logs are mounted to `./deployments/logs` on your host machine.
+
 ## Caution
 
 - Ensure your Binance API key has only the required permissions.
